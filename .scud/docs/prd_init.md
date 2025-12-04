@@ -203,7 +203,8 @@ Based on all the research, here's the "sweet spot" that balances impressiveness 
 │  • Minimal system prompt (<1000 tokens)                         │
 │  • 4 core tools (read, write, edit, bash)                       │
 │  • Event-driven architecture for clean streaming                │
-│  • No permissions, no subagents, no compaction                  │
+│  • YOLO mode (no permission prompts - just execute)             │
+│  • No subagents, no compaction                                  │
 │  • Focus: observable agent loop with great streaming UX         │
 └─────────────────────────────────────────────────────────────────┘
 
@@ -211,32 +212,29 @@ Based on all the research, here's the "sweet spot" that balances impressiveness 
 │                      Technical Stack                             │
 │  Runtime:     Bun                                                │
 │  Server:      Hono + SSE                                         │
-│  Frontend:    Solid.js + Tailwind                               │
+│  Frontend:    Solid.js + minimal CSS (terminal-style)           │
 │  LLM:         Direct Anthropic SDK (no Vercel AI SDK)           │
 │  Validation:  Zod                                                │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### System Prompt (Target: ~600 tokens)
+### System Prompt (Target: ~100-150 tokens)
+
+Pi's Terminal-Bench results prove that minimal prompts work. Go even smaller:
 
 ```typescript
-const SYSTEM_PROMPT = `You are an expert coding assistant. You help users with coding tasks by reading files, executing commands, editing code, and writing new files.
+const SYSTEM_PROMPT = `You are a coding assistant. Help with coding tasks by reading files, executing commands, editing code, and writing files.
 
-<tools>
-- read_file: Read file contents. Use offset/limit for large files.
-- write_file: Create or overwrite files. Creates parent directories automatically.
-- edit_file: Replace exact text in a file. oldText must match exactly.
-- bash: Execute shell commands. Use for ls, grep, find, git, etc.
-</tools>
+Tools: read_file, write_file, edit_file, bash
 
-<guidelines>
-- Use bash for file discovery (ls, find, grep)
-- Read files before editing to understand context
-- Use edit_file for surgical changes, write_file for new files or rewrites
-- Be concise. Short responses are better.
-- Show file paths clearly when working with files.
-</guidelines>`
+Guidelines:
+- Read files before editing
+- Use edit_file for precise changes (oldText must match exactly)
+- Use bash for ls, grep, find, git
+- Be concise`
 ```
+
+That's ~60 tokens. The tools are self-documenting via their schemas.
 
 ### Tool Definitions (Target: ~400 tokens total)
 
@@ -294,6 +292,331 @@ const tools: Anthropic.Tool[] = [
   },
 ]
 ```
+
+---
+
+## Structured Tool Results
+
+Tools should return structured data that separates LLM-facing output from UI-facing details:
+
+```typescript
+interface ToolResult {
+  output: string        // What goes back to the LLM (concise text)
+  details?: {           // Rich data for UI rendering (not sent to LLM)
+    type: 'file' | 'diff' | 'command' | 'error'
+    data: unknown       // Type-specific structured data
+  }
+}
+
+// Example: edit_file returns minimal text for LLM, rich diff for UI
+{
+  output: "Replaced text in src/index.ts (lines 15-20)",
+  details: {
+    type: 'diff',
+    data: {
+      path: "src/index.ts",
+      before: "const x = 1",
+      after: "const x = 2",
+      lineRange: [15, 20]
+    }
+  }
+}
+```
+
+This keeps LLM context lean while enabling rich tool visualization in the UI.
+
+---
+
+## External Task Management Support
+
+The agent should support external task/todo systems via CLAUDE.md or AGENTS.md scaffolding. This is more flexible than a built-in todo system:
+
+### Design
+
+1. **Read instructions from CLAUDE.md/AGENTS.md at session start**
+2. **Inject relevant sections into system prompt** (if present)
+3. **Support common patterns:**
+   - Task file paths (e.g., `.scud/tasks/tasks.scg`)
+   - CLI commands (e.g., `scud warmup`, `scud next`)
+   - Slash commands (e.g., `/scud:task-next`)
+
+### Implementation
+
+```typescript
+// On session init, check for instruction files
+const INSTRUCTION_FILES = ['CLAUDE.md', 'AGENTS.md', '.claude/CLAUDE.md']
+
+async function loadProjectInstructions(workDir: string): Promise<string | null> {
+  for (const file of INSTRUCTION_FILES) {
+    const path = join(workDir, file)
+    if (await exists(path)) {
+      return await readFile(path, 'utf-8')
+    }
+  }
+  return null
+}
+
+// Append to system prompt if found
+const projectInstructions = await loadProjectInstructions(cwd)
+const systemPrompt = SYSTEM_PROMPT + (projectInstructions
+  ? `\n\n<project_instructions>\n${projectInstructions}\n</project_instructions>`
+  : '')
+```
+
+### Benefits
+- No built-in todo complexity
+- Works with any external system (SCUD, TaskMaster, etc.)
+- User controls workflow via their own config files
+- Matches how Claude Code and other agents handle project context
+
+---
+
+## Slash Commands
+
+Simple user-defined prompts triggered by `/name` pattern. Low complexity, high value.
+
+### Design
+
+```
+.claude/commands/
+├── commit.md      # /commit → git commit workflow
+├── review.md      # /review → code review checklist
+└── test.md        # /test → test generation prompt
+```
+
+### Implementation
+
+```typescript
+// Detect slash command in user input
+function parseSlashCommand(input: string): { command: string; args: string } | null {
+  const match = input.match(/^\/(\w+)(?:\s+(.*))?$/)
+  if (!match) return null
+  return { command: match[1], args: match[2] || '' }
+}
+
+// Load and expand command
+async function expandCommand(workDir: string, command: string, args: string): Promise<string | null> {
+  const paths = [
+    join(workDir, '.claude/commands', `${command}.md`),
+    join(workDir, '.agent/commands', `${command}.md`),
+  ]
+
+  for (const path of paths) {
+    if (await exists(path)) {
+      let content = await readFile(path, 'utf-8')
+      return content.replace(/\$ARGUMENTS/g, args)
+    }
+  }
+  return null
+}
+
+// In message handler
+const parsed = parseSlashCommand(userMessage)
+if (parsed) {
+  const expanded = await expandCommand(cwd, parsed.command, parsed.args)
+  if (expanded) {
+    userMessage = expanded  // Replace command with expanded prompt
+  }
+}
+```
+
+### Example Command: `/commit`
+
+```markdown
+<!-- .claude/commands/commit.md -->
+Review the current git diff and create a commit with a descriptive message.
+
+Steps:
+1. Run `git diff --staged` to see changes
+2. If nothing staged, run `git diff` and suggest what to stage
+3. Write a concise commit message following conventional commits
+4. Run `git commit -m "message"`
+
+$ARGUMENTS
+```
+
+---
+
+## Skills (Optional)
+
+Reusable prompt fragments loaded on-demand. Lower priority than commands.
+
+### Design
+
+Skills are markdown files that can be:
+1. **Explicitly invoked**: `/skill:code-review` injects the skill prompt
+2. **Auto-triggered**: Based on patterns in conversation (stretch goal)
+
+```
+.claude/skills/
+├── code-review.md     # Code review checklist
+├── test-gen.md        # Test generation template
+└── refactor.md        # Refactoring guidelines
+```
+
+### Implementation
+
+```typescript
+// Load available skills at session start
+async function loadSkills(workDir: string): Promise<Map<string, string>> {
+  const skills = new Map<string, string>()
+  const dirs = ['.claude/skills', '.agent/skills']
+
+  for (const dir of dirs) {
+    const skillDir = join(workDir, dir)
+    if (await exists(skillDir)) {
+      for (const file of await readdir(skillDir)) {
+        if (file.endsWith('.md')) {
+          const name = file.replace('.md', '')
+          const content = await readFile(join(skillDir, file), 'utf-8')
+          skills.set(name, content)
+        }
+      }
+    }
+  }
+  return skills
+}
+
+// Invoke skill via /skill:name
+function parseSkillCommand(input: string): string | null {
+  const match = input.match(/^\/skill:(\w+)/)
+  return match ? match[1] : null
+}
+```
+
+### Example Skill: `code-review.md`
+
+```markdown
+<!-- .claude/skills/code-review.md -->
+## Code Review Checklist
+
+When reviewing code, check for:
+
+### Correctness
+- [ ] Logic errors
+- [ ] Edge cases handled
+- [ ] Error handling present
+
+### Security
+- [ ] No hardcoded secrets
+- [ ] Input validation
+- [ ] SQL/command injection prevention
+
+### Style
+- [ ] Consistent naming
+- [ ] No dead code
+- [ ] Comments where needed
+```
+
+### Priority
+
+- **Commands**: Medium priority - useful for workflow automation
+- **Skills**: Low priority - nice-to-have, can skip for MVP
+
+---
+
+## Terminal-Style UI
+
+Keep the UI simple and focused. A terminal aesthetic reduces complexity while still looking polished.
+
+### Design Principles
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  agent v0.1                              [tokens: 1.2k/200k] │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  > read_file src/index.ts                          [done ✓]    │
+│    ─────────────────────────────────────                        │
+│    const app = new Hono()                                       │
+│    app.get('/', (c) => c.text('Hello'))                         │
+│    ...                                                          │
+│                                                                 │
+│  > edit_file src/index.ts                      [running...]    │
+│    - oldText: "Hello"                                           │
+│    + newText: "Hello World"                                     │
+│                                                                 │
+│  The file has been updated successfully.                        │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  > _                                                            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Elements
+
+- **Monospace everything** - no complex typography
+- **Dark background, light text** - terminal aesthetic
+- **Tool calls as indented blocks** - no fancy cards
+- **Status indicators** - `[running...]`, `[done ✓]`, `[error ✗]`
+- **Streaming is natural** - text appends like a terminal
+- **Minimal CSS** - ~50-100 lines max
+
+### What to Include
+
+| Feature | Include | Reason |
+|---------|---------|--------|
+| Monospace fonts | Yes | Terminal aesthetic |
+| Auto-scroll | Yes | Essential UX |
+| Syntax highlighting | Yes | High value, low effort (Prism) |
+| Visual diffs | Yes | `- old` / `+ new` with colors |
+| Status bar | Yes | Token count, agent status |
+| Collapsible sections | No | Adds complexity |
+| Animations | No | Not terminal-like |
+| Copy buttons | No | Users can select text |
+
+---
+
+## Agent DAG Visualization (Stretch Goal)
+
+For HumanLayer specifically, observability into agent execution is valuable. A DAG visualization shows:
+
+```
+User Message
+    │
+    ▼
+┌─────────────┐
+│ LLM Call #1 │ 1.2s, 450 tokens
+└─────────────┘
+    │
+    ├──▶ [tool] read_file src/index.ts ──▶ 1.5kb content
+    │
+    ├──▶ [tool] bash "ls -la" ──▶ 12 files
+    │
+    ▼
+┌─────────────┐
+│ LLM Call #2 │ 0.8s, 320 tokens
+└─────────────┘
+    │
+    ├──▶ [tool] edit_file src/index.ts ──▶ success
+    │
+    ▼
+┌─────────────┐
+│ LLM Call #3 │ 0.3s, 80 tokens
+└─────────────┘
+    │
+    ▼
+Final Response: "I've updated the file..."
+```
+
+### Implementation Ideas
+
+- **Slide-out panel** triggered by button/keyboard shortcut
+- **Or separate `/debug` route** showing execution history
+- **Each node expandable** to show full content
+- **Timing and token usage** per step
+- **Could use simple ASCII art** or a library like dagre-d3
+
+### Why It's Valuable
+
+- Shows exactly what the agent did
+- Helps debug unexpected behavior
+- Demonstrates understanding of agent architecture
+- Aligns with HumanLayer's human-in-the-loop focus
+
+### Priority
+
+Low - only if time permits after core features are complete.
 
 ---
 
