@@ -1,6 +1,6 @@
 import { AnthropicProvider } from './anthropic'
 import { createXAIProvider, createOpenAIProvider, OpenAICompatibleProvider } from './openai-compatible'
-import type { LLMProvider, ProviderName, ProviderConfig, ToolDefinition } from './types'
+import type { LLMProvider, ProviderName, ProviderConfig, ToolDefinition, ModelInfo } from './types'
 export * from './types'
 
 // Provider registry
@@ -64,7 +64,7 @@ function getDefaultModel(provider: ProviderName): string {
 function createProvider(name: ProviderName, apiKey?: string, model?: string): LLMProvider {
   switch (name) {
     case 'anthropic':
-      return new AnthropicProvider(apiKey)
+      return new AnthropicProvider(apiKey, model)
     case 'xai':
       return createXAIProvider(apiKey, model)
     case 'openai':
@@ -129,18 +129,24 @@ export const toolDefinitions: ToolDefinition[] = [
 ]
 
 // List available providers based on environment
-export function listAvailableProviders(): { provider: ProviderName; model: string }[] {
-  const available: { provider: ProviderName; model: string }[] = []
+export function listAvailableProviders(): { provider: ProviderName; defaultModel: string }[] {
+  const available: { provider: ProviderName; defaultModel: string }[] = []
 
   if (process.env.ANTHROPIC_API_KEY) {
-    available.push({ provider: 'anthropic', model: getDefaultModel('anthropic') })
+    available.push({ provider: 'anthropic', defaultModel: getDefaultModel('anthropic') })
   }
   if (process.env.XAI_API_KEY) {
-    available.push({ provider: 'xai', model: getDefaultModel('xai') })
+    available.push({ provider: 'xai', defaultModel: getDefaultModel('xai') })
   }
   if (process.env.OPENAI_API_KEY) {
-    available.push({ provider: 'openai', model: getDefaultModel('openai') })
+    available.push({ provider: 'openai', defaultModel: getDefaultModel('openai') })
   }
 
   return available
+}
+
+// List models for a specific provider
+export async function listModelsForProvider(providerName: ProviderName): Promise<ModelInfo[]> {
+  const provider = getProvider({ provider: providerName })
+  return provider.listModels()
 }

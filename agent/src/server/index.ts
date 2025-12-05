@@ -4,7 +4,7 @@ import { cors } from 'hono/cors'
 import { streamSSE } from 'hono/streaming'
 import { agentLoop, type AgentConfig } from './agent'
 import { createSession, saveSession, loadSession, listSessions, deleteSession, updateSessionMessage } from './sessions'
-import { listAvailableProviders } from './providers'
+import { listAvailableProviders, listModelsForProvider, type ProviderName } from './providers'
 import type { Message } from './types'
 import type { Session } from './sessions'
 
@@ -20,6 +20,25 @@ app.get('/api/health', (c) => c.json({ status: 'ok' }))
 app.get('/api/providers', (c) => {
   const providers = listAvailableProviders()
   return c.json({ providers })
+})
+
+// List models for a specific provider
+app.get('/api/providers/:provider/models', async (c) => {
+  const providerName = c.req.param('provider') as ProviderName
+  const validProviders = ['anthropic', 'xai', 'openai']
+
+  if (!validProviders.includes(providerName)) {
+    return c.json({ error: 'Invalid provider' }, 400)
+  }
+
+  try {
+    const models = await listModelsForProvider(providerName)
+    return c.json({ models })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to list models'
+    }, 500)
+  }
 })
 
 // Session management endpoints

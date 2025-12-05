@@ -54,6 +54,14 @@ export type ContentBlock =
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
 
+// Model info returned by providers
+export interface ModelInfo {
+  id: string
+  name: string
+  contextWindow?: number
+  created?: number
+}
+
 // Provider interface - all providers must implement this
 export interface LLMProvider {
   name: ProviderName
@@ -64,6 +72,9 @@ export interface LLMProvider {
     systemPrompt: string,
     tools: ToolDefinition[]
   ): AsyncGenerator<ProviderEvent>
+
+  // List available models from the provider API
+  listModels(): Promise<ModelInfo[]>
 }
 
 // Helper to detect which provider is available

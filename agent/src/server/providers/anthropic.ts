@@ -1,14 +1,36 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { LLMProvider, ProviderEvent, ChatMessage, ToolDefinition, ContentBlock } from './types'
+import type { LLMProvider, ProviderEvent, ChatMessage, ToolDefinition, ContentBlock, ModelInfo } from './types'
 
 export class AnthropicProvider implements LLMProvider {
   name = 'anthropic' as const
   private client: Anthropic
+  private model: string
 
-  constructor(apiKey?: string) {
+  constructor(apiKey?: string, model?: string) {
     this.client = new Anthropic({
       apiKey: apiKey || process.env.ANTHROPIC_API_KEY
     })
+    this.model = model || process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514'
+  }
+
+  async listModels(): Promise<ModelInfo[]> {
+    try {
+      const response = await this.client.models.list()
+      return response.data.map(m => ({
+        id: m.id,
+        name: m.display_name || m.id,
+        created: m.created_at ? new Date(m.created_at).getTime() / 1000 : undefined
+      }))
+    } catch (error) {
+      console.error('Failed to list Anthropic models:', error)
+      // Return known models as fallback
+      return [
+        { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
+        { id: 'claude-opus-4-20250514', name: 'Claude Opus 4' },
+        { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet' },
+        { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku' },
+      ]
+    }
   }
 
   async *stream(
@@ -21,7 +43,7 @@ export class AnthropicProvider implements LLMProvider {
     const anthropicTools = this.convertTools(tools)
 
     const stream = this.client.messages.stream({
-      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
+      model: this.model,
       max_tokens: 8192,
       system: systemPrompt,
       tools: anthropicTools,

@@ -30,7 +30,13 @@ interface SessionSummary {
 
 interface ProviderInfo {
   provider: string
-  model: string
+  defaultModel: string
+}
+
+interface ModelInfo {
+  id: string
+  name: string
+  contextWindow?: number
 }
 
 type AgentStatus = 'idle' | 'thinking' | 'executing' | 'error'
@@ -52,7 +58,11 @@ function App() {
   const [showSessions, setShowSessions] = createSignal(false)
   const [providers, setProviders] = createSignal<ProviderInfo[]>([])
   const [selectedProvider, setSelectedProvider] = createSignal<string | null>(null)
+  const [models, setModels] = createSignal<ModelInfo[]>([])
+  const [selectedModel, setSelectedModel] = createSignal<string | null>(null)
   const [showProviders, setShowProviders] = createSignal(false)
+  const [showModels, setShowModels] = createSignal(false)
+  const [loadingModels, setLoadingModels] = createSignal(false)
   let messagesEndRef: HTMLDivElement | undefined
 
   // Load sessions and providers on mount
@@ -67,11 +77,38 @@ function App() {
       setProviders(data.providers || [])
       // Select first available provider by default
       if (data.providers?.length > 0 && !selectedProvider()) {
-        setSelectedProvider(data.providers[0].provider)
+        const firstProvider = data.providers[0]
+        setSelectedProvider(firstProvider.provider)
+        setSelectedModel(firstProvider.defaultModel)
+        // Load models for the default provider
+        await loadModels(firstProvider.provider)
       }
     } catch (e) {
       console.error('Failed to load providers:', e)
     }
+  }
+
+  const loadModels = async (provider: string) => {
+    setLoadingModels(true)
+    try {
+      const res = await fetch(`/api/providers/${provider}/models`)
+      const data = await res.json()
+      setModels(data.models || [])
+    } catch (e) {
+      console.error('Failed to load models:', e)
+      setModels([])
+    } finally {
+      setLoadingModels(false)
+    }
+  }
+
+  const handleProviderChange = async (provider: string) => {
+    setSelectedProvider(provider)
+    setShowProviders(false)
+    // Reset model and load models for new provider
+    const providerInfo = providers().find(p => p.provider === provider)
+    setSelectedModel(providerInfo?.defaultModel || null)
+    await loadModels(provider)
   }
 
   const loadSessions = async () => {
@@ -150,6 +187,7 @@ function App() {
           history: messages().slice(0, -1), // Exclude the just-added user message
           sessionId: sessionId(),
           provider: selectedProvider(),
+          model: selectedModel(),
         }),
       })
 
@@ -358,9 +396,19 @@ function App() {
   }
 
   const getCurrentProviderInfo = () => {
-    const current = providers().find(p => p.provider === selectedProvider())
-    if (!current) return 'No provider'
-    return `${getProviderLabel(current.provider)} (${current.model.split('-').slice(0, 2).join('-')})`
+    const provider = selectedProvider()
+    const model = selectedModel()
+    if (!provider) return 'No provider'
+    const shortModel = model ? model.split('-').slice(0, 2).join('-') : 'default'
+    return `${getProviderLabel(provider)} / ${shortModel}`
+  }
+
+  const getModelDisplayName = (model: ModelInfo) => {
+    // Use the name if different from ID, otherwise format the ID nicely
+    if (model.name && model.name !== model.id) {
+      return model.name
+    }
+    return model.id
   }
 
   return (
@@ -385,7 +433,7 @@ function App() {
         </div>
         <div class="header-status">
           <span class="status-item provider-selector" onClick={() => setShowProviders(!showProviders())}>
-            {getCurrentProviderInfo()}
+            {getProviderLabel(selectedProvider() || '')}
             <Show when={showProviders()}>
               <div class="provider-dropdown">
                 <For each={providers()}>
@@ -394,17 +442,44 @@ function App() {
                       class={`provider-option ${selectedProvider() === p.provider ? 'active' : ''}`}
                       onClick={(e) => {
                         e.stopPropagation()
-                        setSelectedProvider(p.provider)
-                        setShowProviders(false)
+                        handleProviderChange(p.provider)
                       }}
                     >
                       <span class="provider-name">{getProviderLabel(p.provider)}</span>
-                      <span class="provider-model">{p.model}</span>
                     </div>
                   )}
                 </For>
                 <Show when={providers().length === 0}>
                   <div class="provider-option disabled">No providers configured</div>
+                </Show>
+              </div>
+            </Show>
+          </span>
+          <span class="status-item model-selector" onClick={() => setShowModels(!showModels())}>
+            {selectedModel() ? selectedModel()?.split('-').slice(0, 2).join('-') : 'model'}
+            <Show when={showModels()}>
+              <div class="model-dropdown">
+                <Show when={loadingModels()}>
+                  <div class="model-option disabled">Loading models...</div>
+                </Show>
+                <Show when={!loadingModels()}>
+                  <For each={models()}>
+                    {(m) => (
+                      <div
+                        class={`model-option ${selectedModel() === m.id ? 'active' : ''}`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setSelectedModel(m.id)
+                          setShowModels(false)
+                        }}
+                      >
+                        <span class="model-name">{getModelDisplayName(m)}</span>
+                      </div>
+                    )}
+                  </For>
+                  <Show when={models().length === 0}>
+                    <div class="model-option disabled">No models available</div>
+                  </Show>
                 </Show>
               </div>
             </Show>

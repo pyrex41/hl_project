@@ -392,3 +392,59 @@ body {
   font-size: 11px;
   color: var(--text-muted);
 }
+
+/* Model selector */
+.model-selector {
+  position: relative;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.model-selector:hover {
+  background: var(--border);
+}
+
+.model-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-width: 280px;
+  max-height: 400px;
+  overflow-y: auto;
+  z-index: 200;
+}
+
+.model-option {
+  padding: 10px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+
+.model-option:last-child {
+  border-bottom: none;
+}
+
+.model-option:hover {
+  background: var(--bg);
+}
+
+.model-option.active {
+  background: var(--bg);
+  border-left: 2px solid var(--accent);
+}
+
+.model-option.disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.model-name {
+  color: var(--text);
+  font-size: 12px;
+}

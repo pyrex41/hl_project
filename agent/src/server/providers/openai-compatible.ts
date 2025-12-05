@@ -1,11 +1,12 @@
 import OpenAI from 'openai'
-import type { LLMProvider, ProviderEvent, ChatMessage, ToolDefinition, ProviderName, ContentBlock } from './types'
+import type { LLMProvider, ProviderEvent, ChatMessage, ToolDefinition, ProviderName, ContentBlock, ModelInfo } from './types'
 
 // Works with xAI, OpenAI, and any OpenAI-compatible API
 export class OpenAICompatibleProvider implements LLMProvider {
   name: ProviderName
   private client: OpenAI
   private model: string
+  private baseURL?: string
 
   constructor(config: {
     name: ProviderName
@@ -15,10 +16,52 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }) {
     this.name = config.name
     this.model = config.model
+    this.baseURL = config.baseURL
     this.client = new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseURL
     })
+  }
+
+  async listModels(): Promise<ModelInfo[]> {
+    try {
+      const response = await this.client.models.list()
+      const models: ModelInfo[] = []
+      for await (const model of response) {
+        models.push({
+          id: model.id,
+          name: model.id,
+          created: model.created
+        })
+      }
+      // Sort by created date, newest first
+      return models.sort((a, b) => (b.created || 0) - (a.created || 0))
+    } catch (error) {
+      console.error(`Failed to list ${this.name} models:`, error)
+      // Return known models as fallback based on provider
+      return this.getFallbackModels()
+    }
+  }
+
+  private getFallbackModels(): ModelInfo[] {
+    switch (this.name) {
+      case 'xai':
+        return [
+          { id: 'grok-3-beta', name: 'Grok 3 Beta' },
+          { id: 'grok-3-fast-beta', name: 'Grok 3 Fast Beta' },
+          { id: 'grok-2-latest', name: 'Grok 2' },
+        ]
+      case 'openai':
+        return [
+          { id: 'gpt-4o', name: 'GPT-4o' },
+          { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
+          { id: 'gpt-4-turbo', name: 'GPT-4 Turbo' },
+          { id: 'o1', name: 'o1' },
+          { id: 'o1-mini', name: 'o1 Mini' },
+        ]
+      default:
+        return [{ id: this.model, name: this.model }]
+    }
   }
 
   async *stream(
