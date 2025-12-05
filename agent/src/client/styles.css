@@ -791,8 +791,9 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   width: 90%;
-  max-width: 550px;
-  max-height: 80vh;
+  max-width: 600px;
+  min-height: 300px;
+  max-height: 85vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -823,19 +824,36 @@ body {
 .subagent-list {
   flex: 1;
   overflow-y: auto;
-  padding: 12px;
+  padding: 16px;
 }
 
 .subagent-item {
-  padding: 12px 14px;
+  padding: 16px;
   background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  margin-bottom: 10px;
+  border: 2px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 12px;
+  transition: border-color 0.15s ease;
 }
 
 .subagent-item:last-child {
   margin-bottom: 0;
+}
+
+/* Role-specific colors for subagent items */
+.subagent-item.role-simple {
+  border-left: 4px solid var(--green);
+  background: linear-gradient(90deg, rgba(63, 185, 80, 0.05) 0%, var(--bg-tertiary) 30%);
+}
+
+.subagent-item.role-complex {
+  border-left: 4px solid var(--purple);
+  background: linear-gradient(90deg, rgba(163, 113, 247, 0.05) 0%, var(--bg-tertiary) 30%);
+}
+
+.subagent-item.role-researcher {
+  border-left: 4px solid var(--accent);
+  background: linear-gradient(90deg, rgba(88, 166, 255, 0.05) 0%, var(--bg-tertiary) 30%);
 }
 
 .subagent-item-header {
@@ -881,16 +899,16 @@ body {
 
 /* Role selector in confirmation dialog */
 .role-select {
-  padding: 4px 8px;
+  padding: 6px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 6px;
   color: var(--text);
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   cursor: pointer;
-  transition: border-color 0.15s ease;
+  transition: all 0.15s ease;
 }
 
 .role-select:hover {
@@ -902,20 +920,36 @@ body {
   outline: none;
 }
 
+/* Role-specific colors for role selector */
+.role-simple .role-select {
+  color: var(--green);
+  border-color: rgba(63, 185, 80, 0.4);
+}
+
+.role-complex .role-select {
+  color: var(--purple);
+  border-color: rgba(163, 113, 247, 0.4);
+}
+
+.role-researcher .role-select {
+  color: var(--accent);
+  border-color: rgba(88, 166, 255, 0.4);
+}
+
 /* Editable description textarea */
 .subagent-description-edit {
   width: 100%;
-  padding: 8px 10px;
-  margin: 8px 0;
+  padding: 10px 12px;
+  margin: 10px 0 12px 0;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 6px;
   color: var(--text);
   font-family: inherit;
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 1.5;
   resize: vertical;
-  min-height: 60px;
+  min-height: 80px;
   transition: border-color 0.15s ease;
 }
 

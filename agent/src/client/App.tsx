@@ -2281,7 +2281,7 @@ function App() {
                     const effectiveModel = () => task.model || roleConfig()?.model || selectedModel() || ''
 
                     return (
-                      <div class="subagent-item">
+                      <div class={`subagent-item role-${task.role}`}>
                         <div class="subagent-item-header">
                           {/* Editable role selector */}
                           <select
