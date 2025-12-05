@@ -1386,7 +1386,7 @@ function App() {
     if (!confirmation) return
 
     try {
-      await fetch('/api/subagents/confirm', {
+      const response = await fetch('/api/subagents/confirm', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1395,6 +1395,12 @@ function App() {
           tasks
         })
       })
+      if (response.ok) {
+        setPendingConfirmation(null)
+        setStatus('thinking')
+      } else {
+        console.error('Failed to confirm subagents:', await response.text())
+      }
     } catch (e) {
       console.error('Failed to confirm subagents:', e)
     }
