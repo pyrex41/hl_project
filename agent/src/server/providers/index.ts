@@ -1,6 +1,7 @@
 import { AnthropicProvider } from './anthropic'
 import { createXAIProvider, createOpenAIProvider, OpenAICompatibleProvider } from './openai-compatible'
 import type { LLMProvider, ProviderName, ProviderConfig, ToolDefinition, ModelInfo } from './types'
+import { getMCPToolDefinitions } from '../mcp/tools'
 export * from './types'
 
 // Provider registry
@@ -169,10 +170,90 @@ Multiple tasks execute in parallel. Results are returned when all complete.`,
       required: ['tasks'],
     },
   },
+  {
+    name: 'scud',
+    description: `Manage SCUD tasks (task graph system for tracking work).
+
+Actions:
+- list: List tasks. Optional: status (pending|in-progress|done|blocked), tag
+- show: Show task details. Required: id. Optional: tag
+- set-status: Update task status. Required: id, status. Optional: tag
+- next: Find next available task. Optional: tag, claim (boolean), name (for claiming)
+- stats: Show completion statistics. Optional: tag
+- parse-prd: Parse PRD file into tasks. Required: file, tag
+- expand: Expand complex task into subtasks. Optional: id (specific task), all (expand all >=13 points), tag
+
+Examples:
+- List pending tasks: action="list" status="pending"
+- Show task 3: action="show" id="3"
+- Start task: action="set-status" id="3" status="in-progress"
+- Complete task: action="set-status" id="3" status="done"
+- Get next task: action="next"
+- Parse PRD: action="parse-prd" file="epic.md" tag="epic-1"
+- Expand task: action="expand" id="5"`,
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['list', 'show', 'set-status', 'next', 'stats', 'parse-prd', 'expand'],
+          description: 'The SCUD action to perform'
+        },
+        id: {
+          type: 'string',
+          description: 'Task ID (for show, set-status, expand)'
+        },
+        status: {
+          type: 'string',
+          enum: ['pending', 'in-progress', 'done', 'blocked', 'review', 'deferred', 'cancelled'],
+          description: 'Task status (for set-status) or filter (for list)'
+        },
+        tag: {
+          type: 'string',
+          description: 'Tag/epic name to operate on'
+        },
+        name: {
+          type: 'string',
+          description: 'Agent name for claiming tasks'
+        },
+        claim: {
+          type: 'boolean',
+          description: 'Auto-claim when using next action'
+        },
+        file: {
+          type: 'string',
+          description: 'File path (for parse-prd)'
+        },
+        all: {
+          type: 'boolean',
+          description: 'Expand all complex tasks (for expand)'
+        }
+      },
+      required: ['action']
+    },
+  },
 ]
 
 // Tool definitions without the task tool (for subagents to prevent nesting)
 export const subagentToolDefinitions: ToolDefinition[] = toolDefinitions.filter(t => t.name !== 'task')
+
+/**
+ * Get all tool definitions including MCP tools
+ * This is called dynamically to include tools from connected MCP servers
+ */
+export function getAllToolDefinitions(includeTask: boolean = true): ToolDefinition[] {
+  const baseTols = includeTask ? toolDefinitions : subagentToolDefinitions
+  const mcpTools = getMCPToolDefinitions()
+  return [...baseTols, ...mcpTools]
+}
+
+/**
+ * Get subagent tool definitions including MCP tools
+ */
+export function getSubagentToolDefinitions(): ToolDefinition[] {
+  const mcpTools = getMCPToolDefinitions()
+  return [...subagentToolDefinitions, ...mcpTools]
+}
 
 // List available providers based on environment
 export function listAvailableProviders(): { provider: ProviderName; defaultModel: string }[] {

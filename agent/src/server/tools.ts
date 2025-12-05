@@ -2,6 +2,7 @@ import { spawn } from 'child_process'
 import { readFile, writeFile, mkdir, stat, readdir } from 'fs/promises'
 import { dirname, join, isAbsolute } from 'path'
 import type { ToolResult } from './types'
+import { isMCPTool, executeMCPTool } from './mcp/tools'
 
 // Tool definitions are now in providers/index.ts for provider-agnostic format
 
@@ -299,12 +300,209 @@ async function bashTool(
   })
 }
 
+// SCUD tool types
+interface ScudInput {
+  action: 'list' | 'show' | 'set-status' | 'next' | 'stats' | 'parse-prd' | 'expand'
+  id?: string
+  status?: string
+  tag?: string
+  name?: string
+  claim?: boolean
+  file?: string
+  all?: boolean
+}
+
+// Parse SCUD CLI output into structured data for UI
+function parseScudOutput(action: string, output: string): Record<string, unknown> {
+  switch (action) {
+    case 'list': {
+      // Parse task table into array of objects
+      const lines = output.split('\n').filter(l => l.includes('|'))
+      if (lines.length > 1) {
+        const tasks = lines.slice(1).map(line => {
+          const parts = line.split('|').map(s => s.trim())
+          if (parts.length >= 4) {
+            return {
+              id: parts[0],
+              status: parts[1],
+              title: parts[2],
+              complexity: parseInt(parts[3]) || 0
+            }
+          }
+          return null
+        }).filter(Boolean)
+        return { tasks, count: tasks.length }
+      }
+      return { raw: output }
+    }
+
+    case 'stats': {
+      // Extract key metrics
+      const totalMatch = output.match(/Total Tasks:\s*(\d+)/)
+      const doneMatch = output.match(/Done:\s*(\d+)/)
+      const progressMatch = output.match(/(\d+)%/)
+      return {
+        total: totalMatch ? parseInt(totalMatch[1]) : 0,
+        done: doneMatch ? parseInt(doneMatch[1]) : 0,
+        progress: progressMatch ? parseInt(progressMatch[1]) : 0,
+        raw: output
+      }
+    }
+
+    case 'show': {
+      // Extract task details
+      const idMatch = output.match(/Task:\s*(\S+)/)
+      const titleMatch = output.match(/Title:\s*(.+)/)
+      const statusMatch = output.match(/Status:\s*(\w+)/)
+      const complexityMatch = output.match(/Complexity:\s*(\d+)/)
+      return {
+        id: idMatch?.[1],
+        title: titleMatch?.[1]?.trim(),
+        status: statusMatch?.[1],
+        complexity: complexityMatch ? parseInt(complexityMatch[1]) : undefined,
+        raw: output
+      }
+    }
+
+    default:
+      return { raw: output }
+  }
+}
+
+// SCUD tool implementation
+async function scudTool(input: ScudInput, workingDir: string): Promise<ToolResult> {
+  // Build command based on action
+  let command = 'scud'
+
+  switch (input.action) {
+    case 'list':
+      command += ' list'
+      if (input.status) command += ` --status ${input.status}`
+      if (input.tag) command += ` --tag ${input.tag}`
+      break
+
+    case 'show':
+      if (!input.id) {
+        return {
+          output: 'Error: id is required for show action',
+          details: { type: 'error', data: { missing: 'id' } }
+        }
+      }
+      command += ` show ${input.id}`
+      if (input.tag) command += ` --tag ${input.tag}`
+      break
+
+    case 'set-status':
+      if (!input.id || !input.status) {
+        return {
+          output: 'Error: id and status are required for set-status action',
+          details: { type: 'error', data: { missing: !input.id ? 'id' : 'status' } }
+        }
+      }
+      command += ` set-status ${input.id} ${input.status}`
+      if (input.tag) command += ` --tag ${input.tag}`
+      break
+
+    case 'next':
+      command += ' next'
+      if (input.claim && input.name) {
+        command += ` --claim --name ${input.name}`
+      }
+      if (input.tag) command += ` --tag ${input.tag}`
+      break
+
+    case 'stats':
+      command += ' stats'
+      if (input.tag) command += ` --tag ${input.tag}`
+      break
+
+    case 'parse-prd':
+      if (!input.file || !input.tag) {
+        return {
+          output: 'Error: file and tag are required for parse-prd action',
+          details: { type: 'error', data: { missing: !input.file ? 'file' : 'tag' } }
+        }
+      }
+      command += ` parse-prd ${input.file} --tag=${input.tag}`
+      break
+
+    case 'expand':
+      command += ' expand'
+      if (input.id) {
+        command += ` ${input.id}`
+      }
+      if (input.all) {
+        command += ' --all'
+      }
+      if (input.tag) command += ` --tag ${input.tag}`
+      break
+
+    default:
+      return {
+        output: `Error: Unknown action: ${input.action}`,
+        details: { type: 'error', data: { unknownAction: input.action } }
+      }
+  }
+
+  // Execute command
+  return new Promise((resolve) => {
+    const proc = spawn('bash', ['-c', command], {
+      cwd: workingDir,
+      env: process.env
+    })
+
+    let stdout = ''
+    let stderr = ''
+
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString()
+    })
+
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString()
+    })
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        resolve({
+          output: stderr || stdout || `SCUD command failed with code ${code}`,
+          details: { type: 'error', data: { exitCode: code, stderr, command } }
+        })
+        return
+      }
+
+      // Parse output for structured data
+      const parsed = parseScudOutput(input.action, stdout)
+
+      resolve({
+        output: stdout.trim(),
+        details: {
+          type: 'command',
+          data: { action: input.action, command, ...parsed }
+        }
+      })
+    })
+
+    proc.on('error', (error) => {
+      resolve({
+        output: `Error executing SCUD: ${error.message}`,
+        details: { type: 'error', data: { error: error.message } }
+      })
+    })
+  })
+}
+
 // Main tool executor
 export async function executeTool(
   name: string,
   input: Record<string, unknown>,
   workingDir: string
 ): Promise<ToolResult> {
+  // Check if this is an MCP tool
+  if (isMCPTool(name)) {
+    return executeMCPTool(name, input)
+  }
+
   switch (name) {
     case 'read_file':
       return readFileTool(input as { path: string; offset?: number; limit?: number }, workingDir)
@@ -314,6 +512,8 @@ export async function executeTool(
       return editFileTool(input as { path: string; oldText: string; newText: string }, workingDir)
     case 'bash':
       return bashTool(input as { command: string; timeout?: number }, workingDir)
+    case 'scud':
+      return scudTool(input as ScudInput, workingDir)
     default:
       return {
         output: `Unknown tool: ${name}`,

@@ -1,4 +1,4 @@
-import { getProvider, subagentToolDefinitions, type ChatMessage, type ContentBlock, type ProviderName } from './providers'
+import { getProvider, getSubagentToolDefinitions, type ChatMessage, type ContentBlock, type ProviderName } from './providers'
 import { SUBAGENT_SYSTEM_PROMPT, loadProjectInstructions } from './prompt'
 import { executeTool } from './tools'
 import type { SubagentConfig, SubagentRole } from './config'
@@ -113,8 +113,9 @@ export async function* runSubagent(
       const pendingTools: Map<string, { name: string; input: Record<string, unknown> }> = new Map()
       let textContent = ''
 
-      // Stream from provider - use subagent tool definitions (no task tool)
-      for await (const event of provider.stream(messages, systemPrompt, subagentToolDefinitions)) {
+      // Stream from provider - use subagent tool definitions (no task tool, includes MCP tools)
+      const tools = getSubagentToolDefinitions()
+      for await (const event of provider.stream(messages, systemPrompt, tools)) {
         switch (event.type) {
           case 'text_delta':
             textContent += event.delta
@@ -380,8 +381,9 @@ export async function* continueSubagent(
       const pendingTools: Map<string, { name: string; input: Record<string, unknown> }> = new Map()
       let textContent = ''
 
-      // Stream from provider
-      for await (const event of provider.stream(messages, systemPrompt, subagentToolDefinitions)) {
+      // Stream from provider (includes MCP tools)
+      const continueTools = getSubagentToolDefinitions()
+      for await (const event of provider.stream(messages, systemPrompt, continueTools)) {
         switch (event.type) {
           case 'text_delta':
             textContent += event.delta

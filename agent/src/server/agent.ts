@@ -1,4 +1,4 @@
-import { getProvider, toolDefinitions, type ProviderConfig, type ChatMessage, type ContentBlock } from './providers'
+import { getProvider, getAllToolDefinitions, type ProviderConfig, type ChatMessage, type ContentBlock } from './providers'
 import { getSystemPrompt } from './prompt'
 import { executeTool } from './tools'
 import { loadConfig, needsConfirmation, type SubagentConfig } from './config'
@@ -81,8 +81,11 @@ export async function* agentLoop(
       const pendingTools: Map<string, { name: string; input: Record<string, unknown> }> = new Map()
       let hasTextContent = false
 
+      // Get tools including MCP tools (dynamic at each iteration)
+      const tools = getAllToolDefinitions(true)
+
       // Stream from provider
-      for await (const event of provider.stream(messages, systemPrompt, toolDefinitions)) {
+      for await (const event of provider.stream(messages, systemPrompt, tools)) {
         switch (event.type) {
           case 'text_delta':
             hasTextContent = true

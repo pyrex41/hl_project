@@ -1,6 +1,7 @@
 /* @refresh reload */
 import { render } from 'solid-js/web'
 import { createSignal, createEffect, For, Show, onMount } from 'solid-js'
+import { MCPPanel } from './MCPPanel'
 
 // Prompt suffix for parallel task execution
 const PARALLEL_PROMPT = `
@@ -392,6 +393,8 @@ function App() {
   const [settingsModels, setSettingsModels] = createSignal<Record<string, ModelInfo[]>>({})
   // Graph view state
   const [showGraphView, setShowGraphView] = createSignal(false)
+  // MCP panel state
+  const [showMCPPanel, setShowMCPPanel] = createSignal(false)
   const [graphNodes, setGraphNodes] = createSignal<GraphNode[]>([])
   const [selectedGraphNode, setSelectedGraphNode] = createSignal<GraphNode | null>(null)
   const [expandedSubagents, setExpandedSubagents] = createSignal<Set<string>>(new Set())
@@ -1646,6 +1649,13 @@ function App() {
           >
             <span class="btn-icon">⚙</span>
           </button>
+          <button
+            class={`header-btn ${showMCPPanel() ? 'active' : ''}`}
+            onClick={() => setShowMCPPanel(!showMCPPanel())}
+            title="MCP Servers"
+          >
+            <span class="btn-icon">🔌</span>
+          </button>
           <div class="header-divider" />
           <button
             class={`view-toggle-btn ${showGraphView() ? 'active' : ''}`}
@@ -2650,6 +2660,23 @@ function App() {
             </div>
           </div>
         )}
+      </Show>
+
+      {/* MCP Panel */}
+      <Show when={showMCPPanel()}>
+        <div class="mcp-panel-overlay" onClick={() => setShowMCPPanel(false)}>
+          <div class="mcp-panel-container" onClick={(e) => e.stopPropagation()}>
+            <MCPPanel
+              workingDir={process.cwd ? process.cwd() : '.'}
+              onClose={() => setShowMCPPanel(false)}
+              onCommandSelect={(cmd) => {
+                // Insert command into input
+                setInput(`/${cmd.name} `)
+                setShowMCPPanel(false)
+              }}
+            />
+          </div>
+        </div>
       </Show>
     </>
   )
