@@ -205,6 +205,15 @@ export class MCPClientManager {
   }
 
   /**
+   * Remove an MCP server completely (disconnect and remove from state)
+   */
+  async removeServer(serverId: string): Promise<void> {
+    await this.disconnect(serverId)
+    this.serverStates.delete(serverId)
+    this.emit({ type: 'server_removed', serverId })
+  }
+
+  /**
    * Reconnect to an MCP server
    */
   async reconnect(serverId: string): Promise<void> {

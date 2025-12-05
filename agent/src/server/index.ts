@@ -606,23 +606,31 @@ app.delete('/api/mcp/servers/:id', async (c) => {
   const serverId = c.req.param('id')
   const workingDir = c.req.query('workingDir') || process.cwd()
 
+  console.log('[MCP Delete] serverId:', serverId, 'workingDir:', workingDir, 'cwd:', process.cwd())
+
   try {
     const config = await loadMCPConfig(workingDir)
+    console.log('[MCP Delete] Loaded config with', config.servers.length, 'servers:', config.servers.map(s => s.id))
     const serverIndex = config.servers.findIndex(s => s.id === serverId)
 
     if (serverIndex === -1) {
+      console.log('[MCP Delete] Server not found in config')
       return c.json({ error: 'Server not found' }, 404)
     }
 
-    // Disconnect first
-    await mcpManager.disconnect(serverId)
+    // Remove from manager (disconnect + remove from state)
+    console.log('[MCP Delete] Removing server from manager...')
+    await mcpManager.removeServer(serverId)
 
     config.servers.splice(serverIndex, 1)
+    console.log('[MCP Delete] Saving config with', config.servers.length, 'servers')
     await saveMCPConfig(workingDir, config)
     await mcpManager.updateConfig(config)
 
+    console.log('[MCP Delete] Success')
     return c.json({ success: true })
   } catch (error) {
+    console.error('[MCP Delete] Error:', error)
     return c.json({
       error: error instanceof Error ? error.message : 'Failed to delete server'
     }, 500)
