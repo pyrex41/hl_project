@@ -118,16 +118,16 @@ export async function* runSubagent(
         switch (event.type) {
           case 'text_delta':
             textContent += event.delta
-            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'text_delta', delta: event.delta } }
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'text_delta', delta: event.delta }, timestamp: Date.now() }
             break
 
           case 'tool_start':
-            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_start', id: event.id, name: event.name } }
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_start', id: event.id, name: event.name }, timestamp: Date.now() }
             pendingTools.set(event.id, { name: event.name, input: {} })
             break
 
           case 'tool_input_delta':
-            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_input_delta', id: event.id, partialJson: event.partialJson } }
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_input_delta', id: event.id, partialJson: event.partialJson }, timestamp: Date.now() }
             break
 
           case 'tool_complete':
@@ -190,7 +190,7 @@ export async function* runSubagent(
             output: '',
             error: `Doom loop detected: ${tool.name} called ${DOOM_LOOP_THRESHOLD}+ times with identical arguments.`
           }
-          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent }
+          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent, timestamp: Date.now() }
           toolResults.push({
             type: 'tool_result',
             tool_use_id: id,
@@ -207,7 +207,7 @@ export async function* runSubagent(
           continue
         }
 
-        yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_running', id } }
+        yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_running', id }, timestamp: Date.now() }
 
         try {
           const result = await executeTool(tool.name, tool.input, workingDir)
@@ -217,7 +217,7 @@ export async function* runSubagent(
             output: result.output,
             details: result.details
           }
-          yield { type: 'subagent_progress', taskId: task.id, event: resultEvent }
+          yield { type: 'subagent_progress', taskId: task.id, event: resultEvent, timestamp: Date.now() }
           toolResults.push({
             type: 'tool_result',
             tool_use_id: id,
@@ -239,7 +239,7 @@ export async function* runSubagent(
             output: '',
             error: errorMsg
           }
-          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent }
+          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent, timestamp: Date.now() }
           toolResults.push({
             type: 'tool_result',
             tool_use_id: id,
@@ -385,16 +385,16 @@ export async function* continueSubagent(
         switch (event.type) {
           case 'text_delta':
             textContent += event.delta
-            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'text_delta', delta: event.delta } }
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'text_delta', delta: event.delta }, timestamp: Date.now() }
             break
 
           case 'tool_start':
-            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_start', id: event.id, name: event.name } }
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_start', id: event.id, name: event.name }, timestamp: Date.now() }
             pendingTools.set(event.id, { name: event.name, input: {} })
             break
 
           case 'tool_input_delta':
-            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_input_delta', id: event.id, partialJson: event.partialJson } }
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_input_delta', id: event.id, partialJson: event.partialJson }, timestamp: Date.now() }
             break
 
           case 'tool_complete':
@@ -457,7 +457,7 @@ export async function* continueSubagent(
             output: '',
             error: `Doom loop detected: ${tool.name} called ${DOOM_LOOP_THRESHOLD}+ times with identical arguments.`
           }
-          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent }
+          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent, timestamp: Date.now() }
           toolResults.push({
             type: 'tool_result',
             tool_use_id: id,
@@ -474,7 +474,7 @@ export async function* continueSubagent(
           continue
         }
 
-        yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_running', id } }
+        yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_running', id }, timestamp: Date.now() }
 
         try {
           const result = await executeTool(tool.name, tool.input, workingDir)
@@ -484,7 +484,7 @@ export async function* continueSubagent(
             output: result.output,
             details: result.details
           }
-          yield { type: 'subagent_progress', taskId: task.id, event: resultEvent }
+          yield { type: 'subagent_progress', taskId: task.id, event: resultEvent, timestamp: Date.now() }
           toolResults.push({
             type: 'tool_result',
             tool_use_id: id,
@@ -506,7 +506,7 @@ export async function* continueSubagent(
             output: '',
             error: errorMsg
           }
-          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent }
+          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent, timestamp: Date.now() }
           toolResults.push({
             type: 'tool_result',
             tool_use_id: id,
@@ -556,7 +556,7 @@ export async function* continueSubagent(
 
 /**
  * Run multiple subagents in parallel
- * Merges their event streams and collects results
+ * Merges their event streams and yields events as they arrive (true streaming)
  */
 export async function* runSubagentsParallel(
   tasks: SubagentTask[],
@@ -564,52 +564,60 @@ export async function* runSubagentsParallel(
   config: SubagentConfig,
   parentConfig?: ParentConfig
 ): AsyncGenerator<AgentEvent> {
-  const results: Map<string, { summary: string; fullHistory: Message[] }> = new Map()
-  const errors: Map<string, { error: string; fullHistory: Message[] }> = new Map()
+  // Create a queue to collect events from all generators
+  const eventQueue: AgentEvent[] = []
+  let resolveWaiting: (() => void) | null = null
+  let allDone = false
 
   // Create generators for each subagent
-  const generators = tasks.map(task => ({
-    taskId: task.id,
-    gen: runSubagent({ task, workingDir, config, parentConfig })
-  }))
+  const generators = tasks.map(task =>
+    runSubagent({ task, workingDir, config, parentConfig })
+  )
 
-  // Process all generators concurrently
-  // We'll use a simple round-robin approach to yield events
-  const pending = new Set(generators.map(g => g.taskId))
-
-  while (pending.size > 0) {
-    // Process one event from each active generator
-    const iterPromises = generators
-      .filter(g => pending.has(g.taskId))
-      .map(async ({ taskId, gen }) => {
-        const result = await gen.next()
-        return { taskId, result }
-      })
-
-    // Wait for all current iterations
-    const iterations = await Promise.all(iterPromises)
-
-    for (const { taskId, result } of iterations) {
-      if (result.done) {
-        pending.delete(taskId)
-        continue
+  // Start all generators concurrently, pushing events to queue
+  const runGenerator = async (gen: AsyncGenerator<AgentEvent>) => {
+    try {
+      for await (const event of gen) {
+        eventQueue.push(event)
+        // Wake up the consumer if it's waiting
+        if (resolveWaiting) {
+          resolveWaiting()
+          resolveWaiting = null
+        }
       }
-
-      const event = result.value
-      yield event
-
-      // Track completion/error for final aggregation
-      if (event.type === 'subagent_complete') {
-        results.set(event.taskId, {
-          summary: event.summary,
-          fullHistory: event.fullHistory
-        })
-      } else if (event.type === 'subagent_error') {
-        errors.set(event.taskId, {
-          error: event.error,
-          fullHistory: event.fullHistory
-        })
-      }
+    } catch (error) {
+      // Generator threw an error - this shouldn't happen since runSubagent catches errors
+      console.error('Subagent generator error:', error)
     }
+  }
+
+  // Start all generators
+  const generatorPromises = generators.map(runGenerator)
+
+  // Mark as done when all generators complete
+  Promise.all(generatorPromises).then(() => {
+    allDone = true
+    if (resolveWaiting) {
+      resolveWaiting()
+      resolveWaiting = null
+    }
+  })
+
+  // Yield events as they arrive
+  while (true) {
+    // Yield all queued events
+    while (eventQueue.length > 0) {
+      yield eventQueue.shift()!
+    }
+
+    // If all generators are done and queue is empty, we're finished
+    if (allDone && eventQueue.length === 0) {
+      break
+    }
+
+    // Wait for more events
+    await new Promise<void>(resolve => {
+      resolveWaiting = resolve
+    })
   }
 }

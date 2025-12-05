@@ -381,6 +381,23 @@ body {
   margin-bottom: 6px;
 }
 
+.tool-header-clickable {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.tool-header-clickable:hover {
+  background: var(--bg-tertiary);
+}
+
+.tool-expand-icon {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-right: 6px;
+  width: 10px;
+  display: inline-block;
+}
+
 .tool-name {
   color: var(--purple);
   font-weight: 500;

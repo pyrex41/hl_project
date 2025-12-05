@@ -67,6 +67,7 @@ interface SubagentResult {
   // Live progress tracking
   currentText?: string
   currentTools?: Map<string, ToolCall>
+  parentMessageIndex?: number  // NEW: Index of the message that spawned this subagent
 }
 
 interface PendingConfirmation {
@@ -356,6 +357,7 @@ function App() {
   const [tokens, setTokens] = createSignal<TokenUsage>({ input: 0, output: 0 })
   const [currentAssistant, setCurrentAssistant] = createSignal('')
   const [currentTools, setCurrentTools] = createSignal<Map<string, ToolCall>>(new Map())
+  const [collapsedTools, setCollapsedTools] = createSignal<Set<string>>(new Set())
   const [sessionId, setSessionId] = createSignal<string | null>(null)
   const [sessions, setSessions] = createSignal<SessionSummary[]>([])
   const [showSessions, setShowSessions] = createSignal(false)
@@ -370,7 +372,17 @@ function App() {
   const [pendingConfirmation, setPendingConfirmation] = createSignal<PendingConfirmation | null>(null)
   const [runningSubagents, setRunningSubagents] = createSignal<Map<string, SubagentResult>>(new Map())
   const [completedSubagents, setCompletedSubagents] = createSignal<SubagentResult[]>([])
-  const [expandedSubagent, setExpandedSubagent] = createSignal<SubagentResult | null>(null)
+  // Memoize running subagent IDs to prevent flickering - only update when IDs actually change
+  const [runningSubagentIds, setRunningSubagentIds] = createSignal<string[]>([])
+  const [expandedSubagentId, setExpandedSubagentId] = createSignal<string | null>(null)
+  // Derive the live subagent data from the ID
+  const expandedSubagent = () => {
+    const id = expandedSubagentId()
+    if (!id) return null
+    const running = runningSubagents().get(id)
+    if (running) return running
+    return completedSubagents().find(s => s.taskId === id) || null
+  }
   // Settings state
   const [showSettings, setShowSettings] = createSignal(false)
   const [config, setConfig] = createSignal<FullConfig | null>(null)
@@ -649,6 +661,10 @@ function App() {
     setStatus('thinking')
     setCurrentAssistant('')
     setCurrentTools(new Map())
+    // Clear subagents from previous turn
+    setCompletedSubagents([])
+    setRunningSubagents(new Map())
+    setRunningSubagentIds([])
 
     try {
       const response = await fetch('/api/chat', {
@@ -700,6 +716,16 @@ function App() {
   }
 
   const handleEvent = (event: { type: string; [key: string]: unknown }) => {
+    // Debug logging for all events
+    if (event.type === 'text_delta') {
+      console.log(`[${Date.now()}] text_delta:`, JSON.stringify(event.delta).slice(0, 100))
+    } else if (event.type === 'subagent_progress') {
+      const inner = event.event as { type: string; delta?: string }
+      console.log(`[${Date.now()}] subagent_progress:`, event.taskId, inner.type, inner.delta ? JSON.stringify(inner.delta).slice(0, 50) : '')
+    } else if (event.type.startsWith('subagent')) {
+      console.log(`[${Date.now()}] ${event.type}`, event.taskId, event.timestamp ? `(server: ${event.timestamp})` : '')
+    }
+
     switch (event.type) {
       case 'text_delta':
         setCurrentAssistant(prev => prev + (event.delta as string))
@@ -717,6 +743,10 @@ function App() {
           })
           return next
         })
+        // Auto-collapse task tool calls
+        if ((event.name as string) === 'task') {
+          setCollapsedTools(prev => new Set([...prev, event.id as string]))
+        }
         break
 
       case 'tool_input_delta':
@@ -816,10 +846,13 @@ function App() {
             fullHistory: [],
             status: 'running',
             currentText: '',
-            currentTools: new Map()
+            currentTools: new Map(),
+            parentMessageIndex: messages().length
           })
           return next
         })
+        // Update stable ID list (prevents flickering)
+        setRunningSubagentIds(prev => [...prev, event.taskId as string])
         break
 
       case 'subagent_progress':
@@ -829,13 +862,15 @@ function App() {
           const existing = next.get(event.taskId as string)
           if (existing) {
             const innerEvent = event.event as { type: string; [key: string]: unknown }
+            // Create a fresh copy to ensure SolidJS reactivity triggers
+            const updated = { ...existing }
             switch (innerEvent.type) {
               case 'text_delta':
-                existing.currentText = (existing.currentText || '') + (innerEvent.delta as string)
+                updated.currentText = (existing.currentText || '') + (innerEvent.delta as string)
                 break
               case 'tool_start':
-                if (!existing.currentTools) existing.currentTools = new Map()
-                existing.currentTools.set(innerEvent.id as string, {
+                updated.currentTools = new Map(existing.currentTools || new Map())
+                updated.currentTools.set(innerEvent.id as string, {
                   id: innerEvent.id as string,
                   name: innerEvent.name as string,
                   input: '',
@@ -844,28 +879,38 @@ function App() {
                 break
               case 'tool_input_delta':
                 if (existing.currentTools) {
-                  const tool = existing.currentTools.get(innerEvent.id as string)
-                  if (tool) tool.input = innerEvent.partialJson as string
+                  updated.currentTools = new Map(existing.currentTools)
+                  const tool = updated.currentTools.get(innerEvent.id as string)
+                  if (tool) {
+                    updated.currentTools.set(innerEvent.id as string, { ...tool, input: innerEvent.partialJson as string })
+                  }
                 }
                 break
               case 'tool_running':
                 if (existing.currentTools) {
-                  const tool = existing.currentTools.get(innerEvent.id as string)
-                  if (tool) tool.status = 'running'
+                  updated.currentTools = new Map(existing.currentTools)
+                  const tool = updated.currentTools.get(innerEvent.id as string)
+                  if (tool) {
+                    updated.currentTools.set(innerEvent.id as string, { ...tool, status: 'running' as const })
+                  }
                 }
                 break
               case 'tool_result':
                 if (existing.currentTools) {
-                  const tool = existing.currentTools.get(innerEvent.id as string)
+                  updated.currentTools = new Map(existing.currentTools)
+                  const tool = updated.currentTools.get(innerEvent.id as string)
                   if (tool) {
-                    tool.status = innerEvent.error ? 'error' : 'done'
-                    tool.output = innerEvent.output as string
-                    tool.error = innerEvent.error as string | undefined
+                    updated.currentTools.set(innerEvent.id as string, {
+                      ...tool,
+                      status: innerEvent.error ? 'error' as const : 'done' as const,
+                      output: innerEvent.output as string,
+                      error: innerEvent.error as string | undefined
+                    })
                   }
                 }
                 break
             }
-            next.set(event.taskId as string, { ...existing })
+            next.set(event.taskId as string, updated)
           }
           return next
         })
@@ -889,6 +934,7 @@ function App() {
           next.delete(event.taskId as string)
           return next
         })
+        setRunningSubagentIds(prev => prev.filter(id => id !== event.taskId))
         break
 
       case 'subagent_error':
@@ -909,6 +955,7 @@ function App() {
           next.delete(event.taskId as string)
           return next
         })
+        setRunningSubagentIds(prev => prev.filter(id => id !== event.taskId))
         break
 
       case 'subagent_max_iterations':
@@ -929,6 +976,7 @@ function App() {
           next.delete(event.taskId as string)
           return next
         })
+        setRunningSubagentIds(prev => prev.filter(id => id !== event.taskId))
         break
     }
   }
@@ -936,19 +984,25 @@ function App() {
   const finalizeAssistantMessage = () => {
     const content = currentAssistant()
     const tools = Array.from(currentTools().values())
+    const hasSubagents = completedSubagents().length > 0 || runningSubagents().size > 0
 
     if (content || tools.length > 0) {
+      // If we have subagents, only add tool calls to messages, not the content
+      // The content will be shown after the subagent cards via currentAssistant
       setMessages(prev => [
         ...prev,
         {
           role: 'assistant',
-          content,
+          content: hasSubagents ? '' : content,  // Content goes after subagents
           toolCalls: tools.length > 0 ? tools : undefined,
         },
       ])
     }
 
-    setCurrentAssistant('')
+    // Only clear currentAssistant if no subagents - otherwise keep it for display after cards
+    if (!hasSubagents) {
+      setCurrentAssistant('')
+    }
     setCurrentTools(new Map())
     setStatus('idle')
   }
@@ -1136,7 +1190,7 @@ function App() {
         })
         return next
       })
-      setExpandedSubagent(null)
+      setExpandedSubagentId(null)
 
       // Call API to continue the subagent
       const response = await fetch('/api/subagents/continue', {
@@ -1443,7 +1497,7 @@ function App() {
     const existing = openTabs().find(t => t.taskId === subagent.taskId)
     if (existing) {
       setActiveTab(existing.id)
-      setExpandedSubagent(null)
+      setExpandedSubagentId(null)
       return
     }
 
@@ -1680,131 +1734,161 @@ function App() {
       {/* Main chat view - shown when not in graph view and no subagent tab is active */}
       <Show when={!showGraphView() && activeTab() === null}>
         <div class="messages">
+          {/* Render messages (without inline subagents - they render separately below) */}
           <For each={messages()}>
-          {(msg) => (
-            <div class="message">
-              <Show when={msg.role === 'user'}>
-                <div class="message-user">{msg.content}</div>
-              </Show>
-              <Show when={msg.role === 'assistant'}>
-                <Show when={msg.toolCalls}>
-                  <For each={msg.toolCalls}>
-                    {(tool) => (
-                      <div class="tool-call">
-                        <div class="tool-header">
-                          <span class="tool-name">{tool.name}</span>
-                          <span class={`tool-status ${tool.status}`}>
-                            {tool.status === 'running' && <span class="spinner" />}
-                            {tool.status === 'done' && '✓'}
-                            {tool.status === 'error' && '✗'}
-                            {tool.status}
-                          </span>
+            {(msg) => (
+              <div class="message">
+                <Show when={msg.role === 'user'}>
+                  <div class="message-user">{msg.content}</div>
+                </Show>
+                <Show when={msg.role === 'assistant'}>
+                  <Show when={msg.toolCalls}>
+                    <For each={msg.toolCalls}>
+                      {(tool) => (
+                        <div class="tool-call">
+                          <div
+                            class="tool-header tool-header-clickable"
+                            onClick={() => {
+                              setCollapsedTools(prev => {
+                                const next = new Set(prev)
+                                if (next.has(tool.id)) next.delete(tool.id)
+                                else next.add(tool.id)
+                                return next
+                              })
+                            }}
+                          >
+                            <span class="tool-expand-icon">{collapsedTools().has(tool.id) ? '▶' : '▼'}</span>
+                            <span class="tool-name">{tool.name}</span>
+                            <span class={`tool-status ${tool.status}`}>
+                              {tool.status === 'running' && <span class="spinner" />}
+                              {tool.status === 'done' && '✓'}
+                              {tool.status === 'error' && '✗'}
+                              {tool.status}
+                            </span>
+                          </div>
+                          <Show when={!collapsedTools().has(tool.id)}>
+                            <Show when={tool.input}>
+                              <div class="tool-input">{formatToolInput(tool.name, tool.input)}</div>
+                            </Show>
+                            {renderToolOutput(tool)}
+                          </Show>
                         </div>
-                        <Show when={tool.input}>
-                          <div class="tool-input">{formatToolInput(tool.name, tool.input)}</div>
-                        </Show>
-                        {renderToolOutput(tool)}
-                      </div>
-                    )}
-                  </For>
+                      )}
+                    </For>
+                  </Show>
+                  <Show when={msg.content}>
+                    <div class="message-assistant">{msg.content}</div>
+                  </Show>
                 </Show>
-                <Show when={msg.content}>
-                  <div class="message-assistant">{msg.content}</div>
-                </Show>
-              </Show>
-            </div>
-          )}
-        </For>
+              </div>
+            )}
+          </For>
 
-        {/* Current streaming tool calls - shown before subagents */}
-        <Show when={currentTools().size > 0}>
-          <div class="message">
-            <For each={Array.from(currentTools().values())}>
-              {(tool) => (
-                <div class="tool-call">
-                  <div class="tool-header">
-                    <span class="tool-name">{tool.name}</span>
-                    <span class={`tool-status ${tool.status}`}>
-                      {(tool.status === 'pending' || tool.status === 'running') && <span class="spinner" />}
-                      {tool.status === 'done' && '✓'}
-                      {tool.status === 'error' && '✗'}
-                      {tool.status}
-                    </span>
+          {/* Current streaming tool calls */}
+          <Show when={currentTools().size > 0}>
+            <div class="message">
+              <For each={Array.from(currentTools().values())}>
+                {(tool) => (
+                  <div class="tool-call">
+                    <div
+                      class="tool-header tool-header-clickable"
+                      onClick={() => {
+                        setCollapsedTools(prev => {
+                          const next = new Set(prev)
+                          if (next.has(tool.id)) next.delete(tool.id)
+                          else next.add(tool.id)
+                          return next
+                        })
+                      }}
+                    >
+                      <span class="tool-expand-icon">{collapsedTools().has(tool.id) ? '▶' : '▼'}</span>
+                      <span class="tool-name">{tool.name}</span>
+                      <span class={`tool-status ${tool.status}`}>
+                        {(tool.status === 'pending' || tool.status === 'running') && <span class="spinner" />}
+                        {tool.status === 'done' && '✓'}
+                        {tool.status === 'error' && '✗'}
+                        {tool.status}
+                      </span>
+                    </div>
+                    <Show when={!collapsedTools().has(tool.id)}>
+                      <Show when={tool.input}>
+                        <div class="tool-input">{formatToolInput(tool.name, tool.input)}</div>
+                      </Show>
+                      {renderToolOutput(tool)}
+                    </Show>
                   </div>
-                  <Show when={tool.input}>
-                    <div class="tool-input">{formatToolInput(tool.name, tool.input)}</div>
-                  </Show>
-                  {renderToolOutput(tool)}
-                </div>
-              )}
-            </For>
-          </div>
-        </Show>
+                )}
+              </For>
+            </div>
+          </Show>
 
-        {/* Inline Running Subagents - clickable to expand live progress */}
-        <For each={Array.from(runningSubagents().values())}>
-          {(subagent) => (
-            <div class="message">
-              <div
-                class="subagent-card-inline running"
-                onClick={() => setExpandedSubagent(subagent)}
-              >
-                <div class="subagent-card-header">
-                  <span class={`role-badge ${getRoleBadgeClass(subagent.task.role)}`}>{subagent.task.role}</span>
-                  <span class="subagent-card-desc">{subagent.task.description}</span>
-                  <span class="expand-hint">Click to view live</span>
-                </div>
-                <div class="subagent-card-status">
-                  <span class="spinner" /> Running...
-                  <Show when={subagent.currentText}>
-                    <span class="subagent-preview">
-                      {subagent.currentText!.slice(-80)}
-                    </span>
-                  </Show>
+          {/* Running subagents - clickable to expand live progress */}
+          {/* Use stable ID list to prevent flickering from Map updates */}
+          <For each={runningSubagentIds()}>
+            {(taskId) => {
+              const subagent = () => runningSubagents().get(taskId)
+              return (
+                <Show when={subagent()}>
+                  {(sa) => (
+                    <div class="message">
+                      <div
+                        class="subagent-card-inline running"
+                        onClick={() => setExpandedSubagentId(taskId)}
+                      >
+                        <div class="subagent-card-header">
+                          <span class={`role-badge ${getRoleBadgeClass(sa().task.role)}`}>{sa().task.role}</span>
+                          <span class="subagent-card-desc">{sa().task.description}</span>
+                          <span class="expand-hint">Click to view live</span>
+                        </div>
+                        <div class="subagent-card-status">
+                          <span class="spinner" /> Running...
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </Show>
+              )
+            }}
+          </For>
+
+          {/* All completed subagents - shown after running ones */}
+          <For each={completedSubagents()}>
+            {(subagent) => (
+              <div class="message">
+                <div
+                  class={`subagent-card-inline ${subagent.status} ${subagent.status === 'error' ? 'error' : ''} ${subagent.status === 'max_iterations' ? 'max-iterations' : ''}`}
+                  onClick={() => setExpandedSubagentId(subagent.taskId)}
+                >
+                  <div class="subagent-card-header">
+                    <span class={`role-badge ${getRoleBadgeClass(subagent.task.role)}`}>{subagent.task.role}</span>
+                    <span class="subagent-card-desc">{subagent.task.description}</span>
+                    <span class="expand-hint">Click to expand</span>
+                  </div>
+                  <div class="subagent-card-summary">
+                    <Show when={subagent.status === 'error'}>
+                      {subagent.error}
+                    </Show>
+                    <Show when={subagent.status === 'max_iterations'}>
+                      <span class="max-iterations-warning">
+                        Hit max iterations ({subagent.iterations}) - click to continue
+                      </span>
+                    </Show>
+                    <Show when={subagent.status === 'completed'}>
+                      {subagent.summary.slice(0, 200)}
+                      {subagent.summary.length > 200 ? '...' : ''}
+                    </Show>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
-        </For>
+            )}
+          </For>
 
-        {/* Inline Completed Subagents */}
-        <For each={completedSubagents()}>
-          {(subagent) => (
+          {/* Current assistant text - shown last (this is the parent's final response) */}
+          <Show when={currentAssistant()}>
             <div class="message">
-              <div
-                class={`subagent-card-inline ${subagent.status} ${subagent.status === 'error' ? 'error' : ''} ${subagent.status === 'max_iterations' ? 'max-iterations' : ''}`}
-                onClick={() => setExpandedSubagent(subagent)}
-              >
-                <div class="subagent-card-header">
-                  <span class={`role-badge ${getRoleBadgeClass(subagent.task.role)}`}>{subagent.task.role}</span>
-                  <span class="subagent-card-desc">{subagent.task.description}</span>
-                  <span class="expand-hint">Click to expand</span>
-                </div>
-                <div class="subagent-card-summary">
-                  <Show when={subagent.status === 'error'}>
-                    {subagent.error}
-                  </Show>
-                  <Show when={subagent.status === 'max_iterations'}>
-                    <span class="max-iterations-warning">
-                      Hit max iterations ({subagent.iterations}) - click to continue
-                    </span>
-                  </Show>
-                  <Show when={subagent.status === 'completed'}>
-                    {subagent.summary.slice(0, 200)}
-                    {subagent.summary.length > 200 ? '...' : ''}
-                  </Show>
-                </div>
-              </div>
+              <div class="message-assistant">{currentAssistant()}</div>
             </div>
-          )}
-        </For>
-
-        {/* Current assistant text - shown AFTER subagent cards */}
-        <Show when={currentAssistant()}>
-          <div class="message">
-            <div class="message-assistant">{currentAssistant()}</div>
-          </div>
-        </Show>
+          </Show>
 
           <div ref={messagesEndRef} />
         </div>
@@ -2047,7 +2131,7 @@ function App() {
       {/* Expanded Subagent Window */}
       <Show when={expandedSubagent()}>
         {(subagent) => (
-          <div class="subagent-window-overlay" onClick={() => setExpandedSubagent(null)}>
+          <div class="subagent-window-overlay" onClick={() => setExpandedSubagentId(null)}>
             <div class="subagent-window" onClick={(e) => e.stopPropagation()}>
               <div class="subagent-window-header">
                 <span class={`role-badge ${getRoleBadgeClass(subagent().task.role)}`}>{subagent().task.role}</span>
@@ -2066,7 +2150,7 @@ function App() {
                   <span class="btn-icon">⧉</span>
                   Open in Tab
                 </button>
-                <button class="close-btn" onClick={() => setExpandedSubagent(null)}>×</button>
+                <button class="close-btn" onClick={() => setExpandedSubagentId(null)}>×</button>
               </div>
               <div class="subagent-window-content">
                 {/* Full history */}

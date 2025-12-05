@@ -104,6 +104,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
         yield { type: 'text_delta', delta: delta.content }
       }
 
+      // Reasoning content (xAI Grok 3 models, some future models)
+      // @ts-expect-error - reasoning_content is not in the official types yet
+      if (delta.reasoning_content) {
+        // @ts-expect-error
+        yield { type: 'text_delta', delta: `[Thinking] ${delta.reasoning_content}` }
+      }
+
       // Tool calls
       if (delta.tool_calls) {
         for (const toolCall of delta.tool_calls) {
