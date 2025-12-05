@@ -1,12 +1,31 @@
 {
   "name": "agent",
-  "module": "index.ts",
+  "version": "0.1.0",
+  "module": "src/server/index.ts",
   "type": "module",
   "private": true,
-  "devDependencies": {
-    "@types/bun": "latest"
+  "scripts": {
+    "dev": "concurrently \"bun run dev:server\" \"bun run dev:client\"",
+    "dev:server": "bun --watch src/server/index.ts",
+    "dev:client": "vite",
+    "build": "vite build && bun build src/server/index.ts --outdir=dist/server --target=node",
+    "start": "bun dist/server/index.js",
+    "typecheck": "tsc --noEmit"
   },
-  "peerDependencies": {
-    "typescript": "^5"
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^24.10.1",
+    "concurrently": "^9.2.1",
+    "solid-js": "^1.9.10",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6",
+    "vite-plugin-solid": "^2.11.10"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.1",
+    "@hono/node-server": "^1.19.6",
+    "hono": "^4.10.7",
+    "openai": "^6.10.0",
+    "zod": "^4.1.13"
   }
 }

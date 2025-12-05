@@ -1,0 +1,127 @@
+import Anthropic from '@anthropic-ai/sdk'
+import type { LLMProvider, ProviderEvent, ChatMessage, ToolDefinition, ContentBlock } from './types'
+
+export class AnthropicProvider implements LLMProvider {
+  name = 'anthropic' as const
+  private client: Anthropic
+
+  constructor(apiKey?: string) {
+    this.client = new Anthropic({
+      apiKey: apiKey || process.env.ANTHROPIC_API_KEY
+    })
+  }
+
+  async *stream(
+    messages: ChatMessage[],
+    systemPrompt: string,
+    tools: ToolDefinition[]
+  ): AsyncGenerator<ProviderEvent> {
+    // Convert to Anthropic format
+    const anthropicMessages = this.convertMessages(messages)
+    const anthropicTools = this.convertTools(tools)
+
+    const stream = this.client.messages.stream({
+      model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514',
+      max_tokens: 8192,
+      system: systemPrompt,
+      tools: anthropicTools,
+      messages: anthropicMessages,
+    })
+
+    let currentToolId: string | null = null
+    let currentToolName: string | null = null
+    let currentToolInput = ''
+    let inputTokens = 0
+    let outputTokens = 0
+
+    for await (const event of stream) {
+      if (event.type === 'message_start') {
+        inputTokens = event.message.usage?.input_tokens || 0
+      }
+
+      if (event.type === 'message_delta') {
+        outputTokens = event.usage?.output_tokens || 0
+      }
+
+      if (event.type === 'content_block_start') {
+        if (event.content_block.type === 'tool_use') {
+          currentToolId = event.content_block.id
+          currentToolName = event.content_block.name
+          currentToolInput = ''
+          yield { type: 'tool_start', id: currentToolId, name: currentToolName }
+        }
+      }
+
+      if (event.type === 'content_block_delta') {
+        if (event.delta.type === 'text_delta') {
+          yield { type: 'text_delta', delta: event.delta.text }
+        } else if (event.delta.type === 'input_json_delta') {
+          currentToolInput += event.delta.partial_json
+          if (currentToolId) {
+            yield { type: 'tool_input_delta', id: currentToolId, partialJson: currentToolInput }
+          }
+        }
+      }
+
+      if (event.type === 'content_block_stop') {
+        if (currentToolId && currentToolName) {
+          yield {
+            type: 'tool_complete',
+            id: currentToolId,
+            name: currentToolName,
+            input: JSON.parse(currentToolInput || '{}')
+          }
+          currentToolId = null
+          currentToolName = null
+          currentToolInput = ''
+        }
+      }
+    }
+
+    yield { type: 'message_complete', usage: { inputTokens, outputTokens } }
+  }
+
+  private convertMessages(messages: ChatMessage[]): Anthropic.MessageParam[] {
+    return messages.map(msg => {
+      if (typeof msg.content === 'string') {
+        return { role: msg.role as 'user' | 'assistant', content: msg.content }
+      }
+
+      // Convert content blocks
+      const content: Anthropic.ContentBlockParam[] = msg.content.map(block => {
+        if (block.type === 'text') {
+          return { type: 'text' as const, text: block.text }
+        } else if (block.type === 'tool_use') {
+          return {
+            type: 'tool_use' as const,
+            id: block.id,
+            name: block.name,
+            input: block.input
+          }
+        } else if (block.type === 'tool_result') {
+          return {
+            type: 'tool_result' as const,
+            tool_use_id: block.tool_use_id,
+            content: block.content,
+            is_error: block.is_error
+          }
+        }
+        throw new Error(`Unknown block type: ${(block as ContentBlock).type}`)
+      })
+
+      return { role: msg.role as 'user' | 'assistant', content }
+    })
+  }
+
+  private convertTools(tools: ToolDefinition[]): Anthropic.Tool[] {
+    return tools.map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: {
+        type: 'object' as const,
+        properties: tool.parameters.properties,
+        required: tool.parameters.required
+      }
+    }))
+  }
+}
