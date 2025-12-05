@@ -2303,11 +2303,18 @@ function App() {
               <h3>Spawn {confirmation().tasks.length} Subagent{confirmation().tasks.length > 1 ? 's' : ''}?</h3>
               <div class="subagent-list">
                 <For each={confirmation().tasks}>
-                  {(task) => {
+                  {(task, index) => {
                     // Get provider/model - use task override, or role default from config, or main chat default
                     const roleConfig = () => config()?.subagents?.roles?.[task.role]
                     const effectiveProvider = () => task.provider || roleConfig()?.provider || selectedProvider() || ''
                     const effectiveModel = () => task.model || roleConfig()?.model || selectedModel() || ''
+
+                    // Helper to update task at index without losing focus
+                    const updateTask = (updates: Partial<SubagentTask>) => {
+                      const tasks = confirmation().tasks
+                      const newTasks = tasks.map((t, i) => i === index() ? { ...t, ...updates } : t)
+                      setPendingConfirmation({ ...confirmation(), tasks: newTasks })
+                    }
 
                     return (
                       <div class={`subagent-item role-${task.role}`}>
@@ -2319,18 +2326,11 @@ function App() {
                             onChange={(e) => {
                               const newRole = e.currentTarget.value as SubagentRole
                               const newRoleConfig = config()?.subagents?.roles?.[newRole]
-                              const newTasks = [...confirmation().tasks]
-                              const idx = newTasks.findIndex(t => t.id === task.id)
-                              if (idx >= 0) {
-                                // Update role and reset provider/model to new role's defaults
-                                newTasks[idx] = {
-                                  ...task,
-                                  role: newRole,
-                                  provider: newRoleConfig?.provider,
-                                  model: newRoleConfig?.model
-                                }
-                                setPendingConfirmation({ ...confirmation(), tasks: newTasks })
-                              }
+                              updateTask({
+                                role: newRole,
+                                provider: newRoleConfig?.provider,
+                                model: newRoleConfig?.model
+                              })
                             }}
                           >
                             <option value="simple">simple</option>
@@ -2351,14 +2351,7 @@ function App() {
                           class="subagent-description-edit"
                           value={task.description}
                           rows={3}
-                          onInput={(e) => {
-                            const newTasks = [...confirmation().tasks]
-                            const idx = newTasks.findIndex(t => t.id === task.id)
-                            if (idx >= 0) {
-                              newTasks[idx] = { ...task, description: e.currentTarget.value }
-                              setPendingConfirmation({ ...confirmation(), tasks: newTasks })
-                            }
-                          }}
+                          onInput={(e) => updateTask({ description: e.currentTarget.value })}
                         />
                         <div class="subagent-item-config">
                           <select
@@ -2368,18 +2361,12 @@ function App() {
                               const newProvider = e.currentTarget.value
                               // Load models for this provider if not already loaded
                               await loadModelsForProvider(newProvider)
-                              const newTasks = [...confirmation().tasks]
-                              const idx = newTasks.findIndex(t => t.id === task.id)
-                              if (idx >= 0) {
-                                // Get default model for new provider
-                                const providerInfo = providers().find(p => p.provider === newProvider)
-                                newTasks[idx] = {
-                                  ...task,
-                                  provider: newProvider,
-                                  model: providerInfo?.defaultModel || ''
-                                }
-                                setPendingConfirmation({ ...confirmation(), tasks: newTasks })
-                              }
+                              // Get default model for new provider
+                              const providerInfo = providers().find(p => p.provider === newProvider)
+                              updateTask({
+                                provider: newProvider,
+                                model: providerInfo?.defaultModel || ''
+                              })
                             }}
                           >
                             <For each={providers()}>
@@ -2389,14 +2376,7 @@ function App() {
                           <select
                             class="subagent-select"
                             value={effectiveModel()}
-                            onChange={(e) => {
-                              const newTasks = [...confirmation().tasks]
-                              const idx = newTasks.findIndex(t => t.id === task.id)
-                              if (idx >= 0) {
-                                newTasks[idx] = { ...task, model: e.currentTarget.value }
-                                setPendingConfirmation({ ...confirmation(), tasks: newTasks })
-                              }
-                            }}
+                            onChange={(e) => updateTask({ model: e.currentTarget.value })}
                           >
                             <For each={settingsModels()[effectiveProvider()] || models()}>
                               {(m) => <option value={m.id}>{getShortModelName(m.id)}</option>}
