@@ -3,6 +3,12 @@ import { join, dirname } from 'path'
 import { exists } from './tools'
 import type { ProviderName } from './providers/types'
 
+// Main chat configuration
+export interface MainChatConfig {
+  provider: ProviderName
+  model: string
+}
+
 // Subagent role types
 export type SubagentRole = 'simple' | 'complex' | 'researcher'
 
@@ -13,7 +19,7 @@ export interface RoleConfig {
   maxIterations: number
 }
 
-// Full subagent configuration
+// Subagent configuration
 export interface SubagentConfig {
   // When to confirm with user: always, never, or only when multiple agents
   confirmMode: 'always' | 'never' | 'multiple'
@@ -28,8 +34,17 @@ export interface SubagentConfig {
   roles: Record<SubagentRole, RoleConfig>
 }
 
-// Default configuration
-export const DEFAULT_CONFIG: SubagentConfig = {
+// Full agent configuration (main chat + subagents)
+export interface AgentConfig {
+  // Main chat defaults
+  mainChat?: MainChatConfig
+
+  // Subagent settings
+  subagents: SubagentConfig
+}
+
+// Default subagent configuration
+export const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
   confirmMode: 'always',
   timeout: 120,
   maxConcurrent: 5,
@@ -52,35 +67,58 @@ export const DEFAULT_CONFIG: SubagentConfig = {
   }
 }
 
+// Default full configuration
+export const DEFAULT_CONFIG: AgentConfig = {
+  mainChat: undefined, // Will use first available provider
+  subagents: DEFAULT_SUBAGENT_CONFIG
+}
+
 // Config file path relative to working directory
 const CONFIG_PATH = '.agent/config.json'
 
 /**
- * Load configuration from the working directory
+ * Load full configuration from the working directory
  * Falls back to defaults if not present
  */
-export async function loadConfig(workingDir: string): Promise<SubagentConfig> {
+export async function loadFullConfig(workingDir: string): Promise<AgentConfig> {
   const configPath = join(workingDir, CONFIG_PATH)
 
   try {
     if (await exists(configPath)) {
       const content = await readFile(configPath, 'utf-8')
-      const loaded = JSON.parse(content) as Partial<SubagentConfig>
+      const loaded = JSON.parse(content)
 
-      // Deep merge with defaults to ensure all fields exist
-      return mergeConfig(DEFAULT_CONFIG, loaded)
+      // Handle legacy format (flat subagent config) or new format
+      if (loaded.subagents) {
+        // New format with mainChat and subagents
+        return mergeFullConfig(DEFAULT_CONFIG, loaded)
+      } else if (loaded.roles) {
+        // Legacy format - just subagent config at root
+        return {
+          mainChat: undefined,
+          subagents: mergeSubagentConfig(DEFAULT_SUBAGENT_CONFIG, loaded)
+        }
+      }
     }
   } catch (error) {
     console.warn(`Failed to load config from ${configPath}:`, error)
   }
 
-  return { ...DEFAULT_CONFIG }
+  return { ...DEFAULT_CONFIG, subagents: { ...DEFAULT_SUBAGENT_CONFIG } }
 }
 
 /**
- * Save configuration to the working directory
+ * Load just subagent configuration (for backward compatibility)
  */
-export async function saveConfig(workingDir: string, config: SubagentConfig): Promise<void> {
+export async function loadConfig(workingDir: string): Promise<SubagentConfig> {
+  const full = await loadFullConfig(workingDir)
+  return full.subagents
+}
+
+/**
+ * Save full configuration to the working directory
+ */
+export async function saveFullConfig(workingDir: string, config: AgentConfig): Promise<void> {
   const configPath = join(workingDir, CONFIG_PATH)
 
   // Ensure directory exists
@@ -90,9 +128,28 @@ export async function saveConfig(workingDir: string, config: SubagentConfig): Pr
 }
 
 /**
- * Deep merge configuration with defaults
+ * Save just subagent configuration (for backward compatibility)
  */
-function mergeConfig(defaults: SubagentConfig, loaded: Partial<SubagentConfig>): SubagentConfig {
+export async function saveConfig(workingDir: string, config: SubagentConfig): Promise<void> {
+  const existing = await loadFullConfig(workingDir)
+  existing.subagents = config
+  await saveFullConfig(workingDir, existing)
+}
+
+/**
+ * Deep merge full configuration with defaults
+ */
+function mergeFullConfig(defaults: AgentConfig, loaded: Partial<AgentConfig>): AgentConfig {
+  return {
+    mainChat: loaded.mainChat ?? defaults.mainChat,
+    subagents: mergeSubagentConfig(defaults.subagents, loaded.subagents || {})
+  }
+}
+
+/**
+ * Deep merge subagent configuration with defaults
+ */
+function mergeSubagentConfig(defaults: SubagentConfig, loaded: Partial<SubagentConfig>): SubagentConfig {
   return {
     confirmMode: loaded.confirmMode ?? defaults.confirmMode,
     timeout: loaded.timeout ?? defaults.timeout,

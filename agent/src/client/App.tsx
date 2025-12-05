@@ -65,7 +65,12 @@ interface PendingConfirmation {
   tasks: SubagentTask[]
 }
 
-// Subagent configuration types
+// Configuration types
+interface MainChatConfig {
+  provider: string
+  model: string
+}
+
 interface RoleConfig {
   provider: string
   model: string
@@ -77,6 +82,11 @@ interface SubagentConfig {
   timeout: number
   maxConcurrent: number
   roles: Record<SubagentRole, RoleConfig>
+}
+
+interface FullConfig {
+  mainChat?: MainChatConfig
+  subagents: SubagentConfig
 }
 
 type AgentStatus = 'idle' | 'thinking' | 'executing' | 'error' | 'awaiting_confirmation'
@@ -110,8 +120,8 @@ function App() {
   const [expandedSubagent, setExpandedSubagent] = createSignal<SubagentResult | null>(null)
   // Settings state
   const [showSettings, setShowSettings] = createSignal(false)
-  const [config, setConfig] = createSignal<SubagentConfig | null>(null)
-  const [editingConfig, setEditingConfig] = createSignal<SubagentConfig | null>(null)
+  const [config, setConfig] = createSignal<FullConfig | null>(null)
+  const [editingConfig, setEditingConfig] = createSignal<FullConfig | null>(null)
   const [savingConfig, setSavingConfig] = createSignal(false)
   // Per-provider models cache for settings
   const [settingsModels, setSettingsModels] = createSignal<Record<string, ModelInfo[]>>({})
@@ -119,7 +129,9 @@ function App() {
 
   // Load sessions and providers on mount
   onMount(async () => {
-    await Promise.all([loadSessions(), loadProviders(), loadConfig()])
+    // Load config first, then providers (so we can use config defaults)
+    await loadConfig()
+    await Promise.all([loadSessions(), loadProviders()])
 
     // Global keyboard handler for Escape to close dropdowns
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -154,12 +166,27 @@ function App() {
       const res = await fetch('/api/providers')
       const data = await res.json()
       setProviders(data.providers || [])
-      // Select first available provider by default
+
+      // Check if we have saved defaults in config
+      const savedConfig = config()
+      if (savedConfig?.mainChat && data.providers?.length > 0) {
+        // Use saved main chat config
+        const savedProvider = savedConfig.mainChat.provider
+        const savedModel = savedConfig.mainChat.model
+        // Verify the saved provider is still available
+        if (data.providers.some((p: ProviderInfo) => p.provider === savedProvider)) {
+          setSelectedProvider(savedProvider)
+          setSelectedModel(savedModel)
+          await loadModels(savedProvider)
+          return
+        }
+      }
+
+      // Fallback: select first available provider
       if (data.providers?.length > 0 && !selectedProvider()) {
         const firstProvider = data.providers[0]
         setSelectedProvider(firstProvider.provider)
         setSelectedModel(firstProvider.defaultModel)
-        // Load models for the default provider
         await loadModels(firstProvider.provider)
       }
     } catch (e) {
@@ -177,7 +204,7 @@ function App() {
     }
   }
 
-  const saveConfigToServer = async (newConfig: SubagentConfig) => {
+  const saveConfigToServer = async (newConfig: FullConfig) => {
     setSavingConfig(true)
     try {
       const res = await fetch('/api/config', {
@@ -186,9 +213,16 @@ function App() {
         body: JSON.stringify({ config: newConfig })
       })
       if (res.ok) {
-        setConfig(newConfig)
+        const data = await res.json()
+        setConfig(data.config)
         setEditingConfig(null)
         setShowSettings(false)
+        // If main chat config changed, update the selected provider/model
+        if (newConfig.mainChat) {
+          setSelectedProvider(newConfig.mainChat.provider)
+          setSelectedModel(newConfig.mainChat.model)
+          await loadModels(newConfig.mainChat.provider)
+        }
       }
     } catch (e) {
       console.error('Failed to save config:', e)
@@ -217,12 +251,43 @@ function App() {
   const openSettings = async () => {
     // Load current config and start editing
     await loadConfig()
-    setEditingConfig(config() ? { ...config()!, roles: { ...config()!.roles } } : null)
-    // Pre-load models for all configured providers
     const currentConfig = config()
     if (currentConfig) {
-      const uniqueProviders = new Set(Object.values(currentConfig.roles).map(r => r.provider))
+      // Deep clone for editing
+      setEditingConfig({
+        mainChat: currentConfig.mainChat ? { ...currentConfig.mainChat } : {
+          provider: selectedProvider() || 'anthropic',
+          model: selectedModel() || ''
+        },
+        subagents: {
+          ...currentConfig.subagents,
+          roles: { ...currentConfig.subagents.roles }
+        }
+      })
+      // Pre-load models for all configured providers (main chat + subagent roles)
+      const uniqueProviders = new Set([
+        currentConfig.mainChat?.provider || selectedProvider(),
+        ...Object.values(currentConfig.subagents.roles).map(r => r.provider)
+      ].filter(Boolean) as string[])
       await Promise.all([...uniqueProviders].map(p => loadModelsForProvider(p)))
+    } else {
+      // No config yet, create default from current selection
+      setEditingConfig({
+        mainChat: {
+          provider: selectedProvider() || 'anthropic',
+          model: selectedModel() || ''
+        },
+        subagents: {
+          confirmMode: 'always',
+          timeout: 120,
+          maxConcurrent: 5,
+          roles: {
+            simple: { provider: 'anthropic', model: 'claude-3-5-haiku-20241022', maxIterations: 10 },
+            complex: { provider: 'anthropic', model: 'claude-opus-4-5-20251101', maxIterations: 25 },
+            researcher: { provider: 'anthropic', model: 'claude-sonnet-4-5-20250514', maxIterations: 15 }
+          }
+        }
+      })
     }
     setShowSettings(true)
   }
@@ -1114,20 +1179,82 @@ function App() {
           <div class="settings-overlay" onClick={() => setShowSettings(false)}>
             <div class="settings-dialog" onClick={(e) => e.stopPropagation()}>
               <div class="settings-header">
-                <h2>Subagent Settings</h2>
+                <h2>Settings</h2>
                 <button class="close-btn" onClick={() => setShowSettings(false)}>×</button>
               </div>
 
               <div class="settings-content">
-                {/* General Settings */}
+                {/* Main Chat Settings */}
                 <div class="settings-section">
-                  <h3>General</h3>
+                  <h3>Main Chat</h3>
+                  <p class="settings-hint">Default provider and model for new conversations.</p>
+
+                  <div class="settings-row">
+                    <label>Provider</label>
+                    <select
+                      value={cfg().mainChat?.provider || ''}
+                      onChange={async (e) => {
+                        const newProvider = e.currentTarget.value
+                        await loadModelsForProvider(newProvider)
+                        const providerInfo = providers().find(p => p.provider === newProvider)
+                        setEditingConfig(prev => {
+                          if (!prev) return null
+                          return {
+                            ...prev,
+                            mainChat: {
+                              provider: newProvider,
+                              model: providerInfo?.defaultModel || prev.mainChat?.model || ''
+                            }
+                          }
+                        })
+                      }}
+                    >
+                      <For each={providers()}>
+                        {(p) => <option value={p.provider}>{getProviderLabel(p.provider)}</option>}
+                      </For>
+                    </select>
+                  </div>
+
+                  <div class="settings-row">
+                    <label>Model</label>
+                    <select
+                      value={cfg().mainChat?.model || ''}
+                      onChange={(e) => {
+                        setEditingConfig(prev => {
+                          if (!prev) return null
+                          return {
+                            ...prev,
+                            mainChat: {
+                              provider: prev.mainChat?.provider || '',
+                              model: e.currentTarget.value
+                            }
+                          }
+                        })
+                      }}
+                    >
+                      <For each={settingsModels()[cfg().mainChat?.provider || ''] || []}>
+                        {(m) => <option value={m.id}>{getShortModelName(m.id)}</option>}
+                      </For>
+                      {/* Show current model even if not in list */}
+                      <Show when={cfg().mainChat?.model && !settingsModels()[cfg().mainChat?.provider || '']?.some(m => m.id === cfg().mainChat?.model)}>
+                        <option value={cfg().mainChat?.model}>{getShortModelName(cfg().mainChat?.model || '')}</option>
+                      </Show>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Subagent General Settings */}
+                <div class="settings-section">
+                  <h3>Subagents</h3>
 
                   <div class="settings-row">
                     <label>Confirmation Mode</label>
                     <select
-                      value={cfg().confirmMode}
-                      onChange={(e) => setEditingConfig(prev => prev ? { ...prev, confirmMode: e.currentTarget.value as 'always' | 'never' | 'multiple' } : null)}
+                      value={cfg().subagents.confirmMode}
+                      onChange={(e) => setEditingConfig(prev => prev ? {
+                        ...prev,
+                        subagents: { ...prev.subagents, confirmMode: e.currentTarget.value as 'always' | 'never' | 'multiple' }
+                      } : null)}
                     >
                       <option value="always">Always confirm</option>
                       <option value="multiple">Only for multiple agents</option>
@@ -1141,8 +1268,11 @@ function App() {
                       type="number"
                       min="30"
                       max="600"
-                      value={cfg().timeout}
-                      onChange={(e) => setEditingConfig(prev => prev ? { ...prev, timeout: parseInt(e.currentTarget.value) || 120 } : null)}
+                      value={cfg().subagents.timeout}
+                      onChange={(e) => setEditingConfig(prev => prev ? {
+                        ...prev,
+                        subagents: { ...prev.subagents, timeout: parseInt(e.currentTarget.value) || 120 }
+                      } : null)}
                     />
                   </div>
 
@@ -1152,16 +1282,19 @@ function App() {
                       type="number"
                       min="1"
                       max="10"
-                      value={cfg().maxConcurrent}
-                      onChange={(e) => setEditingConfig(prev => prev ? { ...prev, maxConcurrent: parseInt(e.currentTarget.value) || 5 } : null)}
+                      value={cfg().subagents.maxConcurrent}
+                      onChange={(e) => setEditingConfig(prev => prev ? {
+                        ...prev,
+                        subagents: { ...prev.subagents, maxConcurrent: parseInt(e.currentTarget.value) || 5 }
+                      } : null)}
                     />
                   </div>
                 </div>
 
                 {/* Role Settings */}
                 <div class="settings-section">
-                  <h3>Role Defaults</h3>
-                  <p class="settings-hint">Default provider/model for each role. Can be overridden per-task in confirmation dialog.</p>
+                  <h3>Subagent Role Defaults</h3>
+                  <p class="settings-hint">Default provider/model for each role. Can be overridden per-task.</p>
 
                   <For each={(['simple', 'complex', 'researcher'] as SubagentRole[])}>
                     {(role) => (
@@ -1173,7 +1306,7 @@ function App() {
                           <div class="settings-row">
                             <label>Provider</label>
                             <select
-                              value={cfg().roles[role].provider}
+                              value={cfg().subagents.roles[role].provider}
                               onChange={async (e) => {
                                 const newProvider = e.currentTarget.value
                                 await loadModelsForProvider(newProvider)
@@ -1182,12 +1315,15 @@ function App() {
                                   if (!prev) return null
                                   return {
                                     ...prev,
-                                    roles: {
-                                      ...prev.roles,
-                                      [role]: {
-                                        ...prev.roles[role],
-                                        provider: newProvider,
-                                        model: providerInfo?.defaultModel || prev.roles[role].model
+                                    subagents: {
+                                      ...prev.subagents,
+                                      roles: {
+                                        ...prev.subagents.roles,
+                                        [role]: {
+                                          ...prev.subagents.roles[role],
+                                          provider: newProvider,
+                                          model: providerInfo?.defaultModel || prev.subagents.roles[role].model
+                                        }
                                       }
                                     }
                                   }
@@ -1202,29 +1338,32 @@ function App() {
                           <div class="settings-row">
                             <label>Model</label>
                             <select
-                              value={cfg().roles[role].model}
+                              value={cfg().subagents.roles[role].model}
                               onChange={(e) => {
                                 setEditingConfig(prev => {
                                   if (!prev) return null
                                   return {
                                     ...prev,
-                                    roles: {
-                                      ...prev.roles,
-                                      [role]: {
-                                        ...prev.roles[role],
-                                        model: e.currentTarget.value
+                                    subagents: {
+                                      ...prev.subagents,
+                                      roles: {
+                                        ...prev.subagents.roles,
+                                        [role]: {
+                                          ...prev.subagents.roles[role],
+                                          model: e.currentTarget.value
+                                        }
                                       }
                                     }
                                   }
                                 })
                               }}
                             >
-                              <For each={settingsModels()[cfg().roles[role].provider] || []}>
+                              <For each={settingsModels()[cfg().subagents.roles[role].provider] || []}>
                                 {(m) => <option value={m.id}>{getShortModelName(m.id)}</option>}
                               </For>
                               {/* Show current model even if not in list */}
-                              <Show when={!settingsModels()[cfg().roles[role].provider]?.some(m => m.id === cfg().roles[role].model)}>
-                                <option value={cfg().roles[role].model}>{getShortModelName(cfg().roles[role].model)}</option>
+                              <Show when={!settingsModels()[cfg().subagents.roles[role].provider]?.some(m => m.id === cfg().subagents.roles[role].model)}>
+                                <option value={cfg().subagents.roles[role].model}>{getShortModelName(cfg().subagents.roles[role].model)}</option>
                               </Show>
                             </select>
                           </div>
@@ -1234,17 +1373,20 @@ function App() {
                               type="number"
                               min="1"
                               max="100"
-                              value={cfg().roles[role].maxIterations}
+                              value={cfg().subagents.roles[role].maxIterations}
                               onChange={(e) => {
                                 setEditingConfig(prev => {
                                   if (!prev) return null
                                   return {
                                     ...prev,
-                                    roles: {
-                                      ...prev.roles,
-                                      [role]: {
-                                        ...prev.roles[role],
-                                        maxIterations: parseInt(e.currentTarget.value) || 10
+                                    subagents: {
+                                      ...prev.subagents,
+                                      roles: {
+                                        ...prev.subagents.roles,
+                                        [role]: {
+                                          ...prev.subagents.roles[role],
+                                          maxIterations: parseInt(e.currentTarget.value) || 10
+                                        }
                                       }
                                     }
                                   }

@@ -5,7 +5,7 @@ import { streamSSE } from 'hono/streaming'
 import { agentLoop, type AgentConfig } from './agent'
 import { createSession, saveSession, loadSession, listSessions, deleteSession, updateSessionMessage } from './sessions'
 import { listAvailableProviders, listModelsForProvider, type ProviderName } from './providers'
-import { loadConfig, saveConfig, DEFAULT_CONFIG, type SubagentConfig } from './config'
+import { loadFullConfig, saveFullConfig, DEFAULT_CONFIG, type AgentConfig as FullAgentConfig, type SubagentConfig } from './config'
 import type { Message, SubagentTask } from './types'
 import type { Session } from './sessions'
 
@@ -48,11 +48,11 @@ app.get('/api/providers/:provider/models', async (c) => {
   }
 })
 
-// Configuration endpoints
+// Configuration endpoints - full config (mainChat + subagents)
 app.get('/api/config', async (c) => {
   const workingDir = c.req.query('workingDir') || process.cwd()
   try {
-    const config = await loadConfig(workingDir)
+    const config = await loadFullConfig(workingDir)
     return c.json({ config })
   } catch (error) {
     return c.json({
@@ -64,7 +64,7 @@ app.get('/api/config', async (c) => {
 app.put('/api/config', async (c) => {
   const body = await c.req.json()
   const workingDir: string = body.workingDir || process.cwd()
-  const config: Partial<SubagentConfig> = body.config
+  const config: Partial<FullAgentConfig> = body.config
 
   if (!config) {
     return c.json({ error: 'Missing config in request body' }, 400)
@@ -72,16 +72,19 @@ app.put('/api/config', async (c) => {
 
   try {
     // Load existing config and merge with updates
-    const existing = await loadConfig(workingDir)
-    const merged: SubagentConfig = {
-      ...existing,
-      ...config,
-      roles: {
-        ...existing.roles,
-        ...config.roles
-      }
+    const existing = await loadFullConfig(workingDir)
+    const merged: FullAgentConfig = {
+      mainChat: config.mainChat !== undefined ? config.mainChat : existing.mainChat,
+      subagents: config.subagents ? {
+        ...existing.subagents,
+        ...config.subagents,
+        roles: {
+          ...existing.subagents.roles,
+          ...config.subagents.roles
+        }
+      } : existing.subagents
     }
-    await saveConfig(workingDir, merged)
+    await saveFullConfig(workingDir, merged)
     return c.json({ config: merged })
   } catch (error) {
     return c.json({
