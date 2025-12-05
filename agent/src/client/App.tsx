@@ -68,6 +68,32 @@ function App() {
   // Load sessions and providers on mount
   onMount(async () => {
     await Promise.all([loadSessions(), loadProviders()])
+
+    // Global keyboard handler for Escape to close dropdowns
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowSessions(false)
+        setShowProviders(false)
+        setShowModels(false)
+      }
+    }
+
+    // Click outside handler to close dropdowns
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      // Close sessions panel if clicking outside
+      if (showSessions() && !target.closest('.sessions-panel') && !target.closest('.header-btn')) {
+        setShowSessions(false)
+      }
+      // Close provider/model dropdowns if clicking outside
+      if (!target.closest('.model-picker')) {
+        setShowProviders(false)
+        setShowModels(false)
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    document.addEventListener('mousedown', handleClickOutside)
   })
 
   const loadProviders = async () => {
@@ -379,11 +405,14 @@ function App() {
     }
   }
 
-  const startNewChat = () => {
+  const startNewChat = async () => {
+    // Clear state for a fresh session (session will be created on first message)
     setSessionId(null)
     setMessages([])
     setTokens({ input: 0, output: 0 })
     setShowSessions(false)
+    // Refresh the sessions list so the old session appears
+    await loadSessions()
   }
 
   const getProviderIcon = (provider: string) => {
