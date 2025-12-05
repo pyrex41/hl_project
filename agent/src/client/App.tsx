@@ -2058,7 +2058,7 @@ function App() {
           {/* Thinking indicator - shown when model is thinking but no text yet */}
           <Show when={status() === 'thinking' && !currentAssistant() && currentTools().size === 0}>
             <div class="message">
-              <div class="thinking-indicator">Thinking...</div>
+              <div class={`thinking-indicator provider-${selectedProvider() || ''}`}>Thinking...</div>
             </div>
           </Show>
 
@@ -2268,7 +2268,24 @@ function App() {
 
       {/* Subagent Confirmation Dialog */}
       <Show when={pendingConfirmation()}>
-        {(confirmation) => (
+        {(confirmation) => {
+          const addNewAgent = () => {
+            const newTask: SubagentTask = {
+              id: `task_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+              description: 'New task description...',
+              role: 'simple',
+              provider: selectedProvider() || undefined,
+              model: selectedModel() || undefined
+            }
+            setPendingConfirmation({ ...confirmation(), tasks: [...confirmation().tasks, newTask] })
+          }
+
+          const removeAgent = (taskId: string) => {
+            const newTasks = confirmation().tasks.filter(t => t.id !== taskId)
+            setPendingConfirmation({ ...confirmation(), tasks: newTasks })
+          }
+
+          return (
           <div class="subagent-confirm-overlay" onClick={() => cancelSubagents()}>
             <div class="subagent-confirm-dialog" onClick={(e) => e.stopPropagation()}>
               <h3>Spawn {confirmation().tasks.length} Subagent{confirmation().tasks.length > 1 ? 's' : ''}?</h3>
@@ -2308,6 +2325,14 @@ function App() {
                             <option value="complex">complex</option>
                             <option value="researcher">researcher</option>
                           </select>
+                          {/* Delete button */}
+                          <button
+                            class="subagent-delete-btn"
+                            onClick={() => removeAgent(task.id)}
+                            title="Remove this agent"
+                          >
+                            ×
+                          </button>
                         </div>
                         {/* Editable description/prompt */}
                         <textarea
@@ -2374,16 +2399,24 @@ function App() {
                     )
                   }}
                 </For>
+                {/* Add new agent button */}
+                <button class="subagent-add-btn" onClick={addNewAgent}>
+                  + Add Agent
+                </button>
               </div>
               <div class="dialog-actions">
                 <button class="dialog-btn cancel" onClick={() => cancelSubagents()}>Cancel</button>
-                <button class="dialog-btn confirm" onClick={() => confirmSubagents(confirmation().tasks)}>
-                  Spawn Agents
+                <button
+                  class="dialog-btn confirm"
+                  onClick={() => confirmSubagents(confirmation().tasks)}
+                  disabled={confirmation().tasks.length === 0}
+                >
+                  {confirmation().tasks.length === 0 ? 'No Agents' : `Spawn ${confirmation().tasks.length} Agent${confirmation().tasks.length > 1 ? 's' : ''}`}
                 </button>
               </div>
             </div>
           </div>
-        )}
+        )}}
       </Show>
 
       {/* Expanded Subagent Window */}
