@@ -609,6 +609,66 @@ body {
   opacity: 0.5;
 }
 
+/* Slash command autocomplete */
+.input-wrapper {
+  position: relative;
+}
+
+.command-autocomplete {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
+  z-index: 100;
+}
+
+.command-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background-color 0.1s ease;
+}
+
+.command-item:last-child {
+  border-bottom: none;
+}
+
+.command-item:hover,
+.command-item.selected {
+  background: var(--bg-tertiary);
+}
+
+.command-name {
+  color: var(--accent);
+  font-weight: 600;
+  font-family: 'SF Mono', Monaco, 'Consolas', monospace;
+  font-size: 13px;
+}
+
+.command-hint {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: 'SF Mono', Monaco, 'Consolas', monospace;
+}
+
+.command-desc {
+  width: 100%;
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 /* Sessions panel */
 .sessions-panel {
   position: absolute;

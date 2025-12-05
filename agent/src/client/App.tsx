@@ -395,6 +395,10 @@ function App() {
   const [showGraphView, setShowGraphView] = createSignal(false)
   // MCP panel state
   const [showMCPPanel, setShowMCPPanel] = createSignal(false)
+  // Slash command autocomplete state
+  const [commands, setCommands] = createSignal<{ name: string; description: string; argumentHint?: string }[]>([])
+  const [showCommandAutocomplete, setShowCommandAutocomplete] = createSignal(false)
+  const [selectedCommandIndex, setSelectedCommandIndex] = createSignal(0)
   const [graphNodes, setGraphNodes] = createSignal<GraphNode[]>([])
   const [selectedGraphNode, setSelectedGraphNode] = createSignal<GraphNode | null>(null)
   const [expandedSubagents, setExpandedSubagents] = createSignal<Set<string>>(new Set())
@@ -414,7 +418,7 @@ function App() {
   onMount(async () => {
     // Load config first, then providers (so we can use config defaults)
     await loadConfig()
-    await Promise.all([loadSessions(), loadProviders()])
+    await Promise.all([loadSessions(), loadProviders(), loadCommands()])
 
     // Global keyboard handler for Escape to close dropdowns
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -491,6 +495,28 @@ function App() {
     setSubagentModalUserScrolled(false)
   })
 
+  // Filter commands based on input for autocomplete
+  const filteredCommands = () => {
+    const val = input()
+    if (!val.startsWith('/')) return []
+    const query = val.slice(1).toLowerCase() // Remove leading /
+    return commands().filter(cmd =>
+      cmd.name.toLowerCase().includes(query) ||
+      cmd.description.toLowerCase().includes(query)
+    ).slice(0, 10) // Limit to 10 results
+  }
+
+  // Show autocomplete when typing / and there are matching commands
+  createEffect(() => {
+    const val = input()
+    if (val.startsWith('/') && filteredCommands().length > 0 && status() === 'idle') {
+      setShowCommandAutocomplete(true)
+      setSelectedCommandIndex(0)
+    } else {
+      setShowCommandAutocomplete(false)
+    }
+  })
+
   const loadProviders = async () => {
     try {
       const res = await fetch('/api/providers')
@@ -531,6 +557,16 @@ function App() {
       setConfig(data.config || null)
     } catch (e) {
       console.error('Failed to load config:', e)
+    }
+  }
+
+  const loadCommands = async () => {
+    try {
+      const res = await fetch('/api/commands')
+      const data = await res.json()
+      setCommands(data.commands || [])
+    } catch (e) {
+      console.error('Failed to load commands:', e)
     }
   }
 
@@ -1141,7 +1177,41 @@ function App() {
     return <div class="tool-output">{output}</div>
   }
 
+  const selectCommand = (cmd: { name: string; argumentHint?: string }) => {
+    // Set input to command with trailing space if no hint, or just the command if there's a hint
+    setInput(`/${cmd.name} `)
+    setShowCommandAutocomplete(false)
+  }
+
   const handleKeyDown = (e: KeyboardEvent) => {
+    // Handle autocomplete navigation
+    if (showCommandAutocomplete()) {
+      const cmds = filteredCommands()
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedCommandIndex(i => Math.min(i + 1, cmds.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedCommandIndex(i => Math.max(i - 1, 0))
+        return
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault()
+        const selected = cmds[selectedCommandIndex()]
+        if (selected) {
+          selectCommand(selected)
+        }
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setShowCommandAutocomplete(false)
+        return
+      }
+    }
+
     if (e.key === 'Enter') {
       e.preventDefault()
       // Shift+Enter triggers parallel mode
@@ -2175,6 +2245,24 @@ function App() {
             onKeyDown={handleKeyDown}
             disabled={status() !== 'idle'}
           />
+          {/* Slash command autocomplete dropdown */}
+          <Show when={showCommandAutocomplete() && filteredCommands().length > 0}>
+            <div class="command-autocomplete">
+              <For each={filteredCommands()}>
+                {(cmd, index) => (
+                  <div
+                    class={`command-item ${index() === selectedCommandIndex() ? 'selected' : ''}`}
+                    onClick={() => selectCommand(cmd)}
+                    onMouseEnter={() => setSelectedCommandIndex(index())}
+                  >
+                    <span class="command-name">/{cmd.name}</span>
+                    <span class="command-hint">{cmd.argumentHint || ''}</span>
+                    <span class="command-desc">{cmd.description}</span>
+                  </div>
+                )}
+              </For>
+            </div>
+          </Show>
         </div>
       </div>
 
