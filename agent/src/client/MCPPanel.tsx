@@ -69,6 +69,24 @@ export interface MCPPanelProps {
   workingDir: string
   onCommandSelect?: (command: MCPCommand) => void
   onClose?: () => void
+  onSetupWithAI?: () => void
+}
+
+// Types for discovered servers
+interface DiscoveredServer {
+  id: string
+  name: string
+  transport: 'stdio' | 'sse' | 'streamable-http'
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+}
+
+interface DiscoveredSource {
+  source: string
+  name: string
+  servers: DiscoveredServer[]
 }
 
 export function MCPPanel(props: MCPPanelProps) {
@@ -79,6 +97,10 @@ export function MCPPanel(props: MCPPanelProps) {
   const [error, setError] = createSignal<string | null>(null)
   const [activeTab, setActiveTab] = createSignal<'servers' | 'tools' | 'commands'>('servers')
   const [showAddServer, setShowAddServer] = createSignal(false)
+  const [showImport, setShowImport] = createSignal(false)
+  const [discoveredSources, setDiscoveredSources] = createSignal<DiscoveredSource[]>([])
+  const [selectedImports, setSelectedImports] = createSignal<Set<string>>(new Set())
+  const [loadingDiscover, setLoadingDiscover] = createSignal(false)
 
   // New server form state
   const [newServer, setNewServer] = createSignal<Partial<MCPServerConfig>>({
@@ -166,11 +188,34 @@ export function MCPPanel(props: MCPPanelProps) {
     }
   }
 
+  // Slugify name to create ID
+  const slugify = (name: string): string => {
+    return name
+      .toLowerCase()
+      .trim()
+      .replace(/[^\w\s-]/g, '')
+      .replace(/[\s_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+  }
+
   // Add new server
   const addServer = async () => {
     const server = newServer()
-    if (!server.id || !server.name) {
-      alert('Server ID and name are required')
+    if (!server.name) {
+      alert('Server name is required')
+      return
+    }
+
+    // Auto-generate ID from name
+    const id = slugify(server.name)
+    if (!id) {
+      alert('Server name must contain valid characters')
+      return
+    }
+
+    // Check if ID already exists
+    if (servers().some(s => s.id === id)) {
+      alert(`A server with ID "${id}" already exists. Please choose a different name.`)
       return
     }
 
@@ -180,7 +225,7 @@ export function MCPPanel(props: MCPPanelProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           workingDir: props.workingDir,
-          server: server
+          server: { ...server, id }
         })
       })
 
@@ -199,6 +244,81 @@ export function MCPPanel(props: MCPPanelProps) {
       await fetchData()
     } catch (e) {
       console.error('Failed to add server:', e)
+    }
+  }
+
+  // Discover configs from other tools
+  const discoverConfigs = async () => {
+    setLoadingDiscover(true)
+    try {
+      const res = await fetch('/api/mcp/discover')
+      if (res.ok) {
+        const data = await res.json()
+        setDiscoveredSources(data.sources || [])
+        setSelectedImports(new Set())
+      }
+    } catch (e) {
+      console.error('Failed to discover configs:', e)
+    } finally {
+      setLoadingDiscover(false)
+    }
+  }
+
+  // Toggle server selection for import
+  const toggleImportSelection = (sourceId: string, serverId: string) => {
+    const key = `${sourceId}:${serverId}`
+    const selected = new Set(selectedImports())
+    if (selected.has(key)) {
+      selected.delete(key)
+    } else {
+      selected.add(key)
+    }
+    setSelectedImports(selected)
+  }
+
+  // Check if server already exists
+  const serverExists = (serverId: string) => {
+    return servers().some(s => s.id === serverId)
+  }
+
+  // Import selected servers
+  const importSelected = async () => {
+    const selected = selectedImports()
+    if (selected.size === 0) return
+
+    const sources = discoveredSources()
+    let imported = 0
+
+    for (const key of selected) {
+      const [sourceId, serverId] = key.split(':')
+      const source = sources.find(s => s.source === sourceId)
+      const server = source?.servers.find(s => s.id === serverId)
+
+      if (server && !serverExists(serverId)) {
+        try {
+          const res = await fetch('/api/mcp/servers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              workingDir: props.workingDir,
+              server: {
+                ...server,
+                enabled: true,
+                autoConnect: true
+              }
+            })
+          })
+          if (res.ok) imported++
+        } catch (e) {
+          console.error('Failed to import server:', serverId, e)
+        }
+      }
+    }
+
+    if (imported > 0) {
+      await fetchData()
+      setShowImport(false)
+      setSelectedImports(new Set())
     }
   }
 
@@ -316,25 +436,30 @@ export function MCPPanel(props: MCPPanelProps) {
               </div>
             </Show>
 
-            <Show when={!showAddServer()}>
+            <Show when={!showAddServer() && !showImport()}>
               <button onClick={() => setShowAddServer(true)} class="mcp-btn mcp-btn-full">
                 + Add MCP Server
+              </button>
+              <button
+                onClick={() => {
+                  setShowImport(true)
+                  discoverConfigs()
+                }}
+                class="mcp-btn mcp-btn-full mcp-btn-import"
+              >
+                Import from Claude Code / OpenCode
+              </button>
+              <button
+                onClick={() => props.onSetupWithAI?.()}
+                class="mcp-btn mcp-btn-full mcp-btn-ai"
+              >
+                Setup with AI
               </button>
             </Show>
 
             <Show when={showAddServer()}>
               <div class="mcp-add-form">
                 <h3>Add MCP Server</h3>
-
-                <div class="mcp-form-group">
-                  <label>Server ID</label>
-                  <input
-                    type="text"
-                    placeholder="my-server"
-                    value={newServer().id || ''}
-                    onInput={(e) => setNewServer({ ...newServer(), id: e.currentTarget.value })}
-                  />
-                </div>
 
                 <div class="mcp-form-group">
                   <label>Name</label>
@@ -400,6 +525,80 @@ export function MCPPanel(props: MCPPanelProps) {
                   </button>
                   <button onClick={addServer} class="mcp-btn mcp-btn-primary">
                     Add Server
+                  </button>
+                </div>
+              </div>
+            </Show>
+
+            <Show when={showImport()}>
+              <div class="mcp-import-form">
+                <h3>Import MCP Servers</h3>
+                <p class="mcp-import-desc">Select servers from your existing Claude Code or OpenCode configurations to import.</p>
+
+                <Show when={loadingDiscover()}>
+                  <div class="mcp-loading">Scanning for configurations...</div>
+                </Show>
+
+                <Show when={!loadingDiscover() && discoveredSources().length === 0}>
+                  <div class="mcp-empty">
+                    No MCP configurations found. Make sure Claude Code (~/.mcp.json) or OpenCode (~/.opencode/config.json) is configured.
+                  </div>
+                </Show>
+
+                <Show when={!loadingDiscover() && discoveredSources().length > 0}>
+                  <For each={discoveredSources()}>
+                    {(source) => (
+                      <div class="mcp-import-source">
+                        <div class="mcp-import-source-header">{source.name}</div>
+                        <For each={source.servers}>
+                          {(server) => {
+                            const key = `${source.source}:${server.id}`
+                            const exists = serverExists(server.id)
+                            return (
+                              <label class={`mcp-import-item ${exists ? 'mcp-import-exists' : ''}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={selectedImports().has(key)}
+                                  disabled={exists}
+                                  onChange={() => toggleImportSelection(source.source, server.id)}
+                                />
+                                <div class="mcp-import-item-info">
+                                  <div class="mcp-import-item-name">{server.name}</div>
+                                  <div class="mcp-import-item-details">
+                                    <span class="mcp-badge">{server.transport}</span>
+                                    <Show when={server.command}>
+                                      <span class="mcp-import-cmd">{server.command} {server.args?.join(' ')}</span>
+                                    </Show>
+                                    <Show when={server.url}>
+                                      <span class="mcp-import-cmd">{server.url}</span>
+                                    </Show>
+                                  </div>
+                                  <Show when={exists}>
+                                    <span class="mcp-import-exists-label">Already imported</span>
+                                  </Show>
+                                </div>
+                              </label>
+                            )
+                          }}
+                        </For>
+                      </div>
+                    )}
+                  </For>
+                </Show>
+
+                <div class="mcp-form-actions">
+                  <button onClick={() => {
+                    setShowImport(false)
+                    setSelectedImports(new Set())
+                  }} class="mcp-btn">
+                    Cancel
+                  </button>
+                  <button
+                    onClick={importSelected}
+                    class="mcp-btn mcp-btn-primary"
+                    disabled={selectedImports().size === 0}
+                  >
+                    Import Selected ({selectedImports().size})
                   </button>
                 </div>
               </div>
@@ -649,6 +848,24 @@ export function MCPPanel(props: MCPPanelProps) {
           margin-top: 8px;
         }
 
+        .mcp-btn-ai {
+          background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+          border-color: #6366f1;
+        }
+
+        .mcp-btn-ai:hover {
+          background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+        }
+
+        .mcp-btn-import {
+          background: linear-gradient(135deg, #0ea5e9 0%, #06b6d4 100%);
+          border-color: #0ea5e9;
+        }
+
+        .mcp-btn-import:hover {
+          background: linear-gradient(135deg, #0284c7 0%, #0891b2 100%);
+        }
+
         .mcp-add-form {
           background: #252525;
           border-radius: 6px;
@@ -731,6 +948,107 @@ export function MCPPanel(props: MCPPanelProps) {
           font-family: monospace;
           margin-left: 4px;
           color: #eab308;
+        }
+
+        .mcp-import-form {
+          background: #252525;
+          border-radius: 6px;
+          padding: 16px;
+          margin-top: 12px;
+        }
+
+        .mcp-import-form h3 {
+          margin: 0 0 8px 0;
+          font-size: 14px;
+          color: #fff;
+        }
+
+        .mcp-import-desc {
+          margin: 0 0 16px 0;
+          font-size: 12px;
+          color: #888;
+        }
+
+        .mcp-import-source {
+          margin-bottom: 16px;
+        }
+
+        .mcp-import-source-header {
+          font-size: 12px;
+          font-weight: 600;
+          color: #0ea5e9;
+          margin-bottom: 8px;
+          padding-bottom: 4px;
+          border-bottom: 1px solid #333;
+        }
+
+        .mcp-import-item {
+          display: flex;
+          align-items: flex-start;
+          gap: 10px;
+          padding: 8px;
+          border-radius: 4px;
+          cursor: pointer;
+          margin-bottom: 4px;
+        }
+
+        .mcp-import-item:hover {
+          background: #333;
+        }
+
+        .mcp-import-item input[type="checkbox"] {
+          margin-top: 2px;
+          accent-color: #0ea5e9;
+        }
+
+        .mcp-import-item-info {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .mcp-import-item-name {
+          font-weight: 500;
+          color: #fff;
+          font-size: 13px;
+        }
+
+        .mcp-import-item-details {
+          margin-top: 4px;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          align-items: center;
+        }
+
+        .mcp-import-cmd {
+          font-family: monospace;
+          font-size: 11px;
+          color: #888;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 200px;
+        }
+
+        .mcp-import-exists {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .mcp-import-exists:hover {
+          background: transparent;
+        }
+
+        .mcp-import-exists-label {
+          font-size: 11px;
+          color: #22c55e;
+          margin-top: 4px;
+          display: block;
+        }
+
+        .mcp-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
         }
       `}</style>
     </div>

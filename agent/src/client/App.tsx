@@ -1712,30 +1712,30 @@ function App() {
           <button
             class="header-btn"
             onClick={() => setShowSessions(!showSessions())}
-            title="Sessions (Ctrl+S)"
           >
             <span class="btn-icon">≡</span>
+            <span class="tooltip">Sessions (Ctrl+S)</span>
           </button>
           <button
             class="header-btn"
             onClick={startNewChat}
-            title="New Chat (Ctrl+N)"
           >
             <span class="btn-icon">+</span>
+            <span class="tooltip">New Chat (Ctrl+N)</span>
           </button>
           <button
             class="header-btn"
             onClick={openSettings}
-            title="Settings"
           >
             <span class="btn-icon">⚙</span>
+            <span class="tooltip">Settings</span>
           </button>
           <button
             class={`header-btn ${showMCPPanel() ? 'active' : ''}`}
             onClick={() => setShowMCPPanel(!showMCPPanel())}
-            title="MCP Servers"
           >
-            <span class="btn-icon">🔌</span>
+            <span class="btn-icon">⊛</span>
+            <span class="tooltip">MCP Servers</span>
           </button>
           <div class="header-divider" />
           <button
@@ -2780,8 +2780,16 @@ function App() {
         <div class="mcp-panel-overlay" onClick={() => setShowMCPPanel(false)}>
           <div class="mcp-panel-container" onClick={(e) => e.stopPropagation()}>
             <MCPPanel
-              workingDir={process.cwd ? process.cwd() : '.'}
+              workingDir="."
               onClose={() => setShowMCPPanel(false)}
+              onSetupWithAI={() => {
+                setShowMCPPanel(false)
+                setInput(`Help me set up an MCP server.
+
+Paste the documentation, GitHub README URL, or describe the MCP server you want to configure:
+
+`)
+              }}
               onCommandSelect={(cmd) => {
                 // Insert command into input
                 setInput(`/${cmd.name} `)

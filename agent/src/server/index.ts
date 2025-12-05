@@ -723,6 +723,70 @@ app.post('/api/mcp/commands/:commandName', async (c) => {
   }
 })
 
+// Discover MCP configs from other tools (Claude Code, OpenCode)
+app.get('/api/mcp/discover', async (c) => {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || ''
+  const sources: Array<{
+    source: string
+    name: string
+    servers: Array<{
+      id: string
+      name: string
+      transport: 'stdio' | 'sse' | 'streamable-http'
+      command?: string
+      args?: string[]
+      url?: string
+      env?: Record<string, string>
+    }>
+  }> = []
+
+  // Check Claude Code config (~/.mcp.json)
+  try {
+    const claudeConfigPath = `${homeDir}/.mcp.json`
+    const claudeConfig = await Bun.file(claudeConfigPath).json()
+    if (claudeConfig?.mcpServers) {
+      const servers = Object.entries(claudeConfig.mcpServers).map(([id, config]: [string, any]) => ({
+        id,
+        name: config.name || id,
+        transport: (config.type === 'stdio' ? 'stdio' : config.type === 'sse' ? 'sse' : 'streamable-http') as 'stdio' | 'sse' | 'streamable-http',
+        command: config.command,
+        args: config.args,
+        url: config.url,
+        env: config.env
+      }))
+      if (servers.length > 0) {
+        sources.push({ source: 'claude-code', name: 'Claude Code', servers })
+      }
+    }
+  } catch {
+    // Claude Code config not found or invalid
+  }
+
+  // Check OpenCode config (~/.opencode/config.json)
+  try {
+    const opencodeConfigPath = `${homeDir}/.opencode/config.json`
+    const opencodeConfig = await Bun.file(opencodeConfigPath).json()
+    if (opencodeConfig?.mcp?.servers) {
+      const servers = opencodeConfig.mcp.servers.map((config: any, index: number) => ({
+        id: config.name?.toLowerCase().replace(/\s+/g, '-') || `opencode-${index}`,
+        name: config.name || `OpenCode Server ${index + 1}`,
+        transport: (config.type === 'local' || config.type === 'stdio' ? 'stdio' : 'streamable-http') as 'stdio' | 'sse' | 'streamable-http',
+        command: config.command,
+        args: config.args,
+        url: config.url,
+        env: config.env
+      }))
+      if (servers.length > 0) {
+        sources.push({ source: 'opencode', name: 'OpenCode', servers })
+      }
+    }
+  } catch {
+    // OpenCode config not found or invalid
+  }
+
+  return c.json({ sources })
+})
+
 const port = parseInt(process.env.PORT || '3001')
 
 // Export server config for Bun's auto-serve feature
