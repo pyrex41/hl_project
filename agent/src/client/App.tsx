@@ -408,6 +408,7 @@ function App() {
   let messagesEndRef: HTMLDivElement | undefined
   let subagentMessagesEndRef: HTMLDivElement | undefined
   let graphContainerRef: HTMLDivElement | undefined
+  let inputRef: HTMLInputElement | undefined
   // Auto-scroll state for subagent views
   let subagentTabScrollRef: HTMLDivElement | undefined
   let subagentModalScrollRef: HTMLDivElement | undefined
@@ -420,13 +421,23 @@ function App() {
     await loadConfig()
     await Promise.all([loadSessions(), loadProviders(), loadCommands()])
 
-    // Global keyboard handler for Escape to close dropdowns
+    // Global keyboard handler for Escape to close dropdowns and focus input
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setShowSessions(false)
         setShowProviders(false)
         setShowModels(false)
         setShowSettings(false)
+        setShowCommandAutocomplete(false)
+      }
+
+      // Focus input on Tab or Enter when not already focused on an input/textarea
+      const activeEl = document.activeElement
+      const isInputFocused = activeEl?.tagName === 'INPUT' || activeEl?.tagName === 'TEXTAREA' || activeEl?.tagName === 'SELECT'
+
+      if ((e.key === 'Tab' || e.key === 'Enter') && !isInputFocused && inputRef && status() === 'idle') {
+        e.preventDefault()
+        inputRef.focus()
       }
     }
 
@@ -2237,6 +2248,7 @@ function App() {
         <div class="input-wrapper">
           <span class="input-prompt">&gt;</span>
           <input
+            ref={inputRef}
             type="text"
             class="input-field"
             placeholder={status() === 'idle' ? 'Type a message... (Shift+Enter for parallel)' : 'Agent is working...'}
