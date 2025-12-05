@@ -1,14 +1,26 @@
-import { serve } from '@hono/node-server'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { streamSSE } from 'hono/streaming'
 import { agentLoop, type AgentConfig } from './agent'
 import { createSession, saveSession, loadSession, listSessions, deleteSession, updateSessionMessage } from './sessions'
+import { expandSlashCommand, listCommands, formatHelpText } from './commands'
 import { listAvailableProviders, listModelsForProvider, type ProviderName } from './providers'
 import { loadFullConfig, saveFullConfig, DEFAULT_CONFIG, type AgentConfig as FullAgentConfig, type SubagentConfig } from './config'
 import { continueSubagent } from './subagent'
 import type { Message, SubagentTask } from './types'
 import type { Session } from './sessions'
+import {
+  getMCPManager,
+  loadMCPConfig,
+  saveMCPConfig,
+  type MCPServerConfig,
+  type MCPConfig,
+  validateServerConfig,
+  createServerConfig,
+  getAllMCPCommands,
+  executeMCPCommand,
+  formatMCPCommandsHelp
+} from './mcp'
 
 // Store pending subagent confirmations by request ID
 const pendingConfirmations: Map<string, {
@@ -96,6 +108,31 @@ app.put('/api/config', async (c) => {
 
 app.get('/api/config/defaults', (c) => {
   return c.json({ config: DEFAULT_CONFIG })
+})
+
+// Slash commands endpoints
+app.get('/api/commands', async (c) => {
+  const workingDir = c.req.query('workingDir') || process.cwd()
+  try {
+    const commands = await listCommands(workingDir)
+    return c.json({ commands })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to list commands'
+    }, 500)
+  }
+})
+
+app.get('/api/commands/help', async (c) => {
+  const workingDir = c.req.query('workingDir') || process.cwd()
+  try {
+    const helpText = await formatHelpText(workingDir)
+    return c.json({ help: helpText })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to generate help'
+    }, 500)
+  }
 })
 
 // Subagent confirmation endpoints
@@ -223,7 +260,7 @@ app.delete('/api/sessions/:id', async (c) => {
 // SSE endpoint for agent interactions
 app.post('/api/chat', async (c) => {
   const body = await c.req.json()
-  const userMessage: string = body.message
+  let userMessage: string = body.message
   const history: Message[] = body.history || []
   const workingDir: string = body.workingDir || process.cwd()
   const sessionId: string | undefined = body.sessionId
@@ -240,7 +277,26 @@ app.post('/api/chat', async (c) => {
     session = await loadSession(workingDir, sessionId)
   }
 
+  // Expand slash commands before processing
+  let commandExpanded = false
+  let commandName: string | undefined
+  if (userMessage.startsWith('/')) {
+    const expansion = await expandSlashCommand(userMessage, workingDir)
+    if (expansion) {
+      commandName = expansion.command.name
+      userMessage = expansion.expanded
+      commandExpanded = true
+    }
+  }
+
   return streamSSE(c, async (stream) => {
+    // If a command was expanded, notify the client
+    if (commandExpanded && commandName) {
+      await stream.writeSSE({
+        event: 'command_expanded',
+        data: JSON.stringify({ type: 'command_expanded', command: commandName })
+      })
+    }
     try {
       let assistantContent = ''
       let toolCalls: Message['toolCalls'] = []
@@ -339,12 +395,338 @@ app.post('/api/chat', async (c) => {
   })
 })
 
-const port = parseInt(process.env.PORT || '3001')
-console.log(`Agent server running on http://localhost:${port}`)
+// ============================================================
+// MCP (Model Context Protocol) Endpoints
+// ============================================================
 
-serve({
-  fetch: app.fetch,
-  port,
+// Initialize MCP manager on startup
+const mcpManager = getMCPManager()
+
+// Initialize MCP when server starts (async)
+async function initMCP() {
+  try {
+    const workingDir = process.cwd()
+    const config = await loadMCPConfig(workingDir)
+    await mcpManager.initialize(config)
+    console.log(`MCP initialized with ${config.servers.length} configured servers`)
+  } catch (error) {
+    console.error('Failed to initialize MCP:', error)
+  }
+}
+initMCP()
+
+// Get MCP configuration
+app.get('/api/mcp/config', async (c) => {
+  const workingDir = c.req.query('workingDir') || process.cwd()
+  try {
+    const config = await loadMCPConfig(workingDir)
+    return c.json({ config })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to load MCP config'
+    }, 500)
+  }
 })
 
-export default app
+// Save MCP configuration
+app.put('/api/mcp/config', async (c) => {
+  const body = await c.req.json()
+  const workingDir: string = body.workingDir || process.cwd()
+  const config: MCPConfig = body.config
+
+  if (!config) {
+    return c.json({ error: 'Missing config in request body' }, 400)
+  }
+
+  try {
+    await saveMCPConfig(workingDir, config)
+    await mcpManager.updateConfig(config)
+    return c.json({ config })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to save MCP config'
+    }, 500)
+  }
+})
+
+// List all MCP server states
+app.get('/api/mcp/servers', (c) => {
+  const states = mcpManager.getAllServerStates()
+  return c.json({
+    servers: states.map(s => ({
+      id: s.config.id,
+      name: s.config.name,
+      transport: s.config.transport,
+      status: s.status,
+      error: s.error,
+      toolCount: s.tools.length,
+      promptCount: s.prompts.length,
+      resourceCount: s.resources.length,
+      serverInfo: s.serverInfo,
+      lastConnected: s.lastConnected
+    }))
+  })
+})
+
+// Get specific server state
+app.get('/api/mcp/servers/:id', (c) => {
+  const serverId = c.req.param('id')
+  const state = mcpManager.getServerState(serverId)
+
+  if (!state) {
+    return c.json({ error: 'Server not found' }, 404)
+  }
+
+  return c.json({ server: state })
+})
+
+// Connect to an MCP server
+app.post('/api/mcp/servers/:id/connect', async (c) => {
+  const serverId = c.req.param('id')
+
+  try {
+    await mcpManager.connect(serverId)
+    const state = mcpManager.getServerState(serverId)
+    return c.json({ success: true, server: state })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to connect'
+    }, 500)
+  }
+})
+
+// Disconnect from an MCP server
+app.post('/api/mcp/servers/:id/disconnect', async (c) => {
+  const serverId = c.req.param('id')
+
+  try {
+    await mcpManager.disconnect(serverId)
+    return c.json({ success: true })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to disconnect'
+    }, 500)
+  }
+})
+
+// Reconnect to an MCP server
+app.post('/api/mcp/servers/:id/reconnect', async (c) => {
+  const serverId = c.req.param('id')
+
+  try {
+    await mcpManager.reconnect(serverId)
+    const state = mcpManager.getServerState(serverId)
+    return c.json({ success: true, server: state })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to reconnect'
+    }, 500)
+  }
+})
+
+// Add a new MCP server
+app.post('/api/mcp/servers', async (c) => {
+  const body = await c.req.json()
+  const workingDir: string = body.workingDir || process.cwd()
+  const serverConfig: MCPServerConfig = body.server
+
+  if (!serverConfig) {
+    return c.json({ error: 'Missing server config' }, 400)
+  }
+
+  // Validate
+  const errors = validateServerConfig(serverConfig)
+  if (errors.length > 0) {
+    return c.json({ error: 'Invalid server config', details: errors }, 400)
+  }
+
+  try {
+    const config = await loadMCPConfig(workingDir)
+
+    // Check for duplicate ID
+    if (config.servers.some(s => s.id === serverConfig.id)) {
+      return c.json({ error: 'Server with this ID already exists' }, 400)
+    }
+
+    config.servers.push(serverConfig)
+    await saveMCPConfig(workingDir, config)
+    await mcpManager.updateConfig(config)
+
+    return c.json({ success: true, server: serverConfig })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to add server'
+    }, 500)
+  }
+})
+
+// Update an MCP server
+app.put('/api/mcp/servers/:id', async (c) => {
+  const serverId = c.req.param('id')
+  const body = await c.req.json()
+  const workingDir: string = body.workingDir || process.cwd()
+  const updates: Partial<MCPServerConfig> = body.server
+
+  try {
+    const config = await loadMCPConfig(workingDir)
+    const serverIndex = config.servers.findIndex(s => s.id === serverId)
+
+    if (serverIndex === -1) {
+      return c.json({ error: 'Server not found' }, 404)
+    }
+
+    const existingServer = config.servers[serverIndex]
+    if (!existingServer) {
+      return c.json({ error: 'Server not found' }, 404)
+    }
+
+    const updatedServer = { ...existingServer, ...updates }
+    config.servers[serverIndex] = updatedServer
+
+    // Validate
+    const errors = validateServerConfig(updatedServer)
+    if (errors.length > 0) {
+      return c.json({ error: 'Invalid server config', details: errors }, 400)
+    }
+
+    await saveMCPConfig(workingDir, config)
+    await mcpManager.updateConfig(config)
+
+    return c.json({ success: true, server: updatedServer })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to update server'
+    }, 500)
+  }
+})
+
+// Delete an MCP server
+app.delete('/api/mcp/servers/:id', async (c) => {
+  const serverId = c.req.param('id')
+  const workingDir = c.req.query('workingDir') || process.cwd()
+
+  try {
+    const config = await loadMCPConfig(workingDir)
+    const serverIndex = config.servers.findIndex(s => s.id === serverId)
+
+    if (serverIndex === -1) {
+      return c.json({ error: 'Server not found' }, 404)
+    }
+
+    // Disconnect first
+    await mcpManager.disconnect(serverId)
+
+    config.servers.splice(serverIndex, 1)
+    await saveMCPConfig(workingDir, config)
+    await mcpManager.updateConfig(config)
+
+    return c.json({ success: true })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to delete server'
+    }, 500)
+  }
+})
+
+// List all tools from connected MCP servers
+app.get('/api/mcp/tools', (c) => {
+  const tools = mcpManager.getAllTools()
+  return c.json({ tools })
+})
+
+// List all prompts from connected MCP servers (user-facing commands)
+app.get('/api/mcp/prompts', (c) => {
+  const prompts = mcpManager.getAllPrompts()
+  return c.json({ prompts })
+})
+
+// Get a specific prompt (execute user command)
+app.post('/api/mcp/prompts/:serverId/:promptName', async (c) => {
+  const serverId = c.req.param('serverId')
+  const promptName = c.req.param('promptName')
+  const body = await c.req.json()
+  const args: Record<string, string> = body.arguments || {}
+
+  try {
+    const result = await mcpManager.getPrompt(serverId, promptName, args)
+    return c.json({ result })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to get prompt'
+    }, 500)
+  }
+})
+
+// List all resources from connected MCP servers
+app.get('/api/mcp/resources', (c) => {
+  const resources = mcpManager.getAllResources()
+  return c.json({ resources })
+})
+
+// Read a specific resource
+app.get('/api/mcp/resources/:serverId/*', async (c) => {
+  const serverId = c.req.param('serverId')
+  const uri = c.req.path.replace(`/api/mcp/resources/${serverId}/`, '')
+
+  try {
+    const content = await mcpManager.readResource(serverId, uri)
+    return c.json({ content })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to read resource'
+    }, 500)
+  }
+})
+
+// Helper endpoint: Create server config from common patterns
+app.post('/api/mcp/create-server-config', async (c) => {
+  const body = await c.req.json()
+  try {
+    const config = createServerConfig(body as Parameters<typeof createServerConfig>[0])
+    return c.json({ config })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to create server config'
+    }, 500)
+  }
+})
+
+// List all MCP commands (prompts as user-facing commands)
+app.get('/api/mcp/commands', (c) => {
+  const commands = getAllMCPCommands()
+  return c.json({ commands })
+})
+
+// Get MCP commands help text
+app.get('/api/mcp/commands/help', (c) => {
+  const help = formatMCPCommandsHelp()
+  return c.json({ help })
+})
+
+// Execute an MCP command
+app.post('/api/mcp/commands/:commandName', async (c) => {
+  const commandName = c.req.param('commandName')
+  const body = await c.req.json()
+  const args: Record<string, string> = body.arguments || {}
+
+  try {
+    const result = await executeMCPCommand(commandName, args)
+    if (!result) {
+      return c.json({ error: 'Command not found or failed to execute' }, 404)
+    }
+    return c.json({ result })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to execute command'
+    }, 500)
+  }
+})
+
+const port = parseInt(process.env.PORT || '3001')
+
+// Export server config for Bun's auto-serve feature
+// Bun automatically starts a server when default export has fetch + port
+export default {
+  fetch: app.fetch,
+  port,
+}
