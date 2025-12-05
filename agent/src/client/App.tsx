@@ -133,7 +133,9 @@ const GRAPH_LAYOUT = {
   horizontalGap: 40,
   verticalGap: 30,
   branchIndent: 60,
-  padding: 40
+  padding: 40,
+  labelMaxChars: 24,      // Conservative limit for text truncation
+  labelPadding: 24        // Padding on each side of label
 }
 
 interface TokenUsage {
@@ -209,6 +211,14 @@ function GraphView(props: {
     const hasChildren = node.children.length > 0 || (node.type === 'subagent-root' && node.subagentResult?.fullHistory?.length)
     const isSubagentRoot = node.type === 'subagent-root'
 
+    // Calculate label truncation - subagent roots need more room for expand button
+    const maxChars = isSubagentRoot ? 20 : GRAPH_LAYOUT.labelMaxChars
+    const displayLabel = node.label.slice(0, maxChars) + (node.label.length > maxChars ? '…' : '')
+
+    // Calculate clip path dimensions
+    const labelX = isSubagentRoot ? 30 : 12
+    const clipWidth = GRAPH_LAYOUT.nodeWidth - labelX - 16 // Leave room for live indicator
+
     return (
       <g
         class={`graph-node graph-node-${node.type} ${node.isLive ? 'live' : ''} ${isSelected ? 'selected' : ''}`}
@@ -218,6 +228,18 @@ function GraphView(props: {
           props.onSelectNode(node)
         }}
       >
+        {/* Define clip path for this node's text */}
+        <defs>
+          <clipPath id={`clip-${node.id}`}>
+            <rect
+              x={labelX - 2}
+              y={0}
+              width={clipWidth}
+              height={nodeHeight}
+            />
+          </clipPath>
+        </defs>
+
         {/* Node rectangle */}
         <rect
           class="graph-node-rect"
@@ -225,13 +247,14 @@ function GraphView(props: {
           height={nodeHeight}
         />
 
-        {/* Node label */}
+        {/* Node label with clip path */}
         <text
           class="graph-node-label"
-          x={isSubagentRoot ? 30 : 12}
-          y={nodeHeight / 2 + 4}
+          x={labelX}
+          y={nodeHeight / 2}
+          clip-path={`url(#clip-${node.id})`}
         >
-          {node.label.slice(0, 28)}{node.label.length > 28 ? '...' : ''}
+          {displayLabel}
         </text>
 
         {/* Expand/collapse button for subagents */}
@@ -249,6 +272,17 @@ function GraphView(props: {
               {node.expanded ? '−' : '+'}
             </text>
           </g>
+        </Show>
+
+        {/* Message count badge for collapsed subagents */}
+        <Show when={isSubagentRoot && !node.expanded && node.subagentResult?.fullHistory?.length}>
+          <text
+            class="graph-node-count"
+            x={GRAPH_LAYOUT.nodeWidth - 24}
+            y={nodeHeight / 2}
+          >
+            {node.subagentResult!.fullHistory!.length}
+          </text>
         </Show>
 
         {/* Live indicator */}
@@ -303,7 +337,10 @@ function GraphView(props: {
 function GraphNodeDetail(props: {
   node: GraphNode
   onClose: () => void
+  onOpenInTab?: (subagent: SubagentResult) => void
 }) {
+  const [showFullHistory, setShowFullHistory] = createSignal(false)
+
   const typeLabel = () => {
     switch (props.node.type) {
       case 'user': return 'User Message'
@@ -330,21 +367,54 @@ function GraphNodeDetail(props: {
     }
     if (props.node.type === 'subagent-root' && props.node.subagentResult) {
       const sa = props.node.subagentResult
+      if (showFullHistory() && sa.fullHistory) {
+        // Show full history in scrollable format
+        return sa.fullHistory.map((msg) =>
+          `[${msg.role.toUpperCase()}]\n${msg.content}${msg.toolCalls ? `\n\nTools: ${msg.toolCalls.map(t => t.name).join(', ')}` : ''}`
+        ).join('\n\n---\n\n')
+      }
       return `Task: ${sa.task.description}\n\nStatus: ${sa.status}\n\nSummary:\n${sa.summary || '(running...)'}`
     }
     return props.node.content || props.node.label
   }
 
+  const isSubagent = () => props.node.type === 'subagent-root' && props.node.subagentResult
+  const hasHistory = () => isSubagent() && props.node.subagentResult?.fullHistory?.length
+
   return (
-    <div class="graph-node-detail" style={{ top: '100px', left: '50%', transform: 'translateX(-50%)' }} onClick={(e) => e.stopPropagation()}>
+    <div
+      class={`graph-node-detail ${showFullHistory() ? 'expanded' : ''}`}
+      style={{ top: '80px', left: '50%', transform: 'translateX(-50%)' }}
+      onClick={(e) => e.stopPropagation()}
+    >
       <button class="graph-node-detail-close" onClick={props.onClose}>×</button>
       <div class="graph-node-detail-header">
         <span class={`graph-node-detail-type ${typeClass()}`}>{typeLabel()}</span>
         <Show when={props.node.isLive}>
           <span class="subagent-window-status running"><span class="spinner" /> Live</span>
         </Show>
+        <Show when={isSubagent()}>
+          <div class="graph-node-detail-actions">
+            <Show when={hasHistory()}>
+              <button
+                class="graph-detail-toggle-btn"
+                onClick={() => setShowFullHistory(!showFullHistory())}
+              >
+                {showFullHistory() ? 'Show Summary' : 'Show Full History'}
+              </button>
+            </Show>
+            <Show when={props.onOpenInTab}>
+              <button
+                class="graph-detail-tab-btn"
+                onClick={() => props.onOpenInTab?.(props.node.subagentResult!)}
+              >
+                Open in Tab ↗
+              </button>
+            </Show>
+          </div>
+        </Show>
       </div>
-      <div class="graph-node-detail-content">
+      <div class={`graph-node-detail-content ${showFullHistory() ? 'full-history' : ''}`}>
         {content()}
       </div>
     </div>
@@ -2239,6 +2309,7 @@ function App() {
             <GraphNodeDetail
               node={node()}
               onClose={() => setSelectedGraphNode(null)}
+              onOpenInTab={openSubagentTab}
             />
           )}
         </Show>

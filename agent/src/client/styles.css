@@ -1608,14 +1608,24 @@ body {
 
 .graph-node-label {
   fill: var(--text);
-  font-size: 12px;
+  font-size: 11px;
   font-family: inherit;
   pointer-events: none;
+  dominant-baseline: middle;
+  text-anchor: start;
 }
 
 .graph-node-tool .graph-node-label {
   fill: var(--text-muted);
-  font-size: 11px;
+  font-size: 10px;
+}
+
+.graph-node-count {
+  fill: var(--text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  text-anchor: end;
+  dominant-baseline: middle;
 }
 
 .graph-node-icon {
@@ -1776,6 +1786,53 @@ body {
 .graph-node-detail-close:hover {
   background: var(--bg-tertiary);
   color: var(--text);
+}
+
+/* Graph Node Detail Actions */
+.graph-node-detail-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.graph-detail-toggle-btn,
+.graph-detail-tab-btn {
+  padding: 4px 10px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.graph-detail-toggle-btn:hover,
+.graph-detail-tab-btn:hover {
+  background: var(--bg);
+  color: var(--text);
+  border-color: var(--accent-dim);
+}
+
+.graph-detail-tab-btn {
+  color: var(--accent);
+}
+
+/* Full history mode */
+.graph-node-detail-content.full-history {
+  max-height: 60vh;
+  font-size: 12px;
+  background: var(--bg);
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+/* Expanded detail panel for full history */
+.graph-node-detail.expanded {
+  max-height: 85vh;
+  max-width: 800px;
 }
 
 /* Tab Bar */
