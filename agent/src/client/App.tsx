@@ -2,6 +2,11 @@
 import { render } from 'solid-js/web'
 import { createSignal, createEffect, For, Show, onMount } from 'solid-js'
 
+// Prompt suffix for parallel task execution
+const PARALLEL_PROMPT = `
+
+Use the task tool to spawn multiple subagents in parallel to accomplish this efficiently. Break down the work into independent subtasks that can run concurrently.`
+
 interface Message {
   role: 'user' | 'assistant'
   content: string
@@ -367,9 +372,14 @@ function App() {
     }
   })
 
-  const sendMessage = async () => {
-    const msg = input().trim()
+  const sendMessage = async (useParallel = false) => {
+    let msg = input().trim()
     if (!msg || status() !== 'idle') return
+
+    // Append parallel prompt if shift+enter was used
+    if (useParallel) {
+      msg += PARALLEL_PROMPT
+    }
 
     // Create a session if we don't have one
     if (!sessionId()) {
@@ -649,9 +659,10 @@ function App() {
   }
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter') {
       e.preventDefault()
-      sendMessage()
+      // Shift+Enter triggers parallel mode
+      sendMessage(e.shiftKey)
     }
   }
 
@@ -1049,7 +1060,7 @@ function App() {
           <input
             type="text"
             class="input-field"
-            placeholder={status() === 'idle' ? 'Type a message...' : 'Agent is working...'}
+            placeholder={status() === 'idle' ? 'Type a message... (Shift+Enter for parallel)' : 'Agent is working...'}
             value={input()}
             onInput={(e) => setInput(e.currentTarget.value)}
             onKeyDown={handleKeyDown}
