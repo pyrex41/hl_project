@@ -6,6 +6,7 @@ import { agentLoop, type AgentConfig } from './agent'
 import { createSession, saveSession, loadSession, listSessions, deleteSession, updateSessionMessage } from './sessions'
 import { listAvailableProviders, listModelsForProvider, type ProviderName } from './providers'
 import { loadFullConfig, saveFullConfig, DEFAULT_CONFIG, type AgentConfig as FullAgentConfig, type SubagentConfig } from './config'
+import { continueSubagent } from './subagent'
 import type { Message, SubagentTask } from './types'
 import type { Session } from './sessions'
 
@@ -117,6 +118,49 @@ app.post('/api/subagents/confirm', async (c) => {
 
   pendingConfirmations.delete(requestId)
   return c.json({ success: true })
+})
+
+// Continue a subagent that hit max iterations
+app.post('/api/subagents/continue', async (c) => {
+  const body = await c.req.json()
+  const taskId: string = body.taskId
+  const task: SubagentTask = body.task
+  const history: Message[] = body.history || []
+  const workingDir: string = body.workingDir || process.cwd()
+
+  if (!taskId || !task) {
+    return c.json({ error: 'Missing taskId or task' }, 400)
+  }
+
+  // Load subagent config
+  const fullConfig = await loadFullConfig(workingDir)
+  const subagentConfig = fullConfig.subagents
+
+  return streamSSE(c, async (stream) => {
+    try {
+      for await (const event of continueSubagent({
+        task,
+        workingDir,
+        config: subagentConfig,
+        existingHistory: history
+      })) {
+        await stream.writeSSE({
+          event: event.type,
+          data: JSON.stringify(event),
+        })
+      }
+    } catch (error) {
+      await stream.writeSSE({
+        event: 'subagent_error',
+        data: JSON.stringify({
+          type: 'subagent_error',
+          taskId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          fullHistory: history
+        }),
+      })
+    }
+  })
 })
 
 // Session management endpoints

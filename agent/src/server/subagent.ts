@@ -1,8 +1,8 @@
-import { getProvider, subagentToolDefinitions, type ChatMessage, type ContentBlock } from './providers'
+import { getProvider, subagentToolDefinitions, type ChatMessage, type ContentBlock, type ProviderName } from './providers'
 import { SUBAGENT_SYSTEM_PROMPT, loadProjectInstructions } from './prompt'
 import { executeTool } from './tools'
 import type { SubagentConfig, SubagentRole } from './config'
-import type { AgentEvent, Message, SubagentTask, ToolCall } from './types'
+import type { AgentEvent, Message, SubagentTask, ToolCall, ToolResultDetails } from './types'
 
 const DOOM_LOOP_THRESHOLD = 3
 
@@ -91,7 +91,7 @@ export async function* runSubagent(
 
   // Get the LLM provider
   const provider = getProvider({
-    provider: providerName,
+    provider: providerName as ProviderName,
     model: model
   })
 
@@ -260,9 +260,282 @@ export async function* runSubagent(
       messages.push({ role: 'user', content: toolResults })
     }
 
-    // If we hit max iterations without finishing, note it
+    // If we hit max iterations without finishing, emit special event
     if (iterations >= maxIterations && !finalOutput) {
-      finalOutput = `(Subagent reached max iterations: ${maxIterations})`
+      yield {
+        type: 'subagent_max_iterations',
+        taskId: task.id,
+        iterations: maxIterations,
+        fullHistory: history
+      }
+      return
+    }
+
+    yield {
+      type: 'subagent_complete',
+      taskId: task.id,
+      summary: finalOutput,
+      fullHistory: history
+    }
+  } catch (error) {
+    yield {
+      type: 'subagent_error',
+      taskId: task.id,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      fullHistory: history
+    }
+  }
+}
+
+export interface ContinueSubagentOptions {
+  task: SubagentTask
+  workingDir: string
+  config: SubagentConfig
+  existingHistory: Message[]
+  parentConfig?: ParentConfig
+}
+
+/**
+ * Continue a subagent that hit max iterations
+ * Resumes from existing history with fresh iteration count
+ */
+export async function* continueSubagent(
+  options: ContinueSubagentOptions
+): AsyncGenerator<AgentEvent> {
+  const { task, workingDir, config, existingHistory, parentConfig } = options
+
+  // Get role config (with user overrides)
+  const roleConfig = config.roles[task.role]
+  const providerName = task.provider || parentConfig?.provider || roleConfig.provider
+  const model = task.model || parentConfig?.model || roleConfig.model
+  const maxIterations = roleConfig.maxIterations
+
+  // Build system prompt
+  const projectInstructions = await loadProjectInstructions(workingDir)
+  const systemPrompt = projectInstructions
+    ? `${SUBAGENT_SYSTEM_PROMPT}\n\n<project_instructions>\n${projectInstructions}\n</project_instructions>`
+    : SUBAGENT_SYSTEM_PROMPT
+
+  yield { type: 'subagent_start', taskId: task.id, description: task.description, role: task.role }
+
+  // Get the LLM provider
+  const provider = getProvider({
+    provider: providerName as ProviderName,
+    model: model
+  })
+
+  // Convert existing history to ChatMessage format
+  const messages: ChatMessage[] = []
+  for (const msg of existingHistory) {
+    if (msg.role === 'user') {
+      messages.push({ role: 'user', content: msg.content })
+    } else if (msg.role === 'assistant') {
+      const content: ContentBlock[] = []
+      if (msg.content) {
+        content.push({ type: 'text', text: msg.content })
+      }
+      if (msg.toolCalls) {
+        for (const tool of msg.toolCalls) {
+          content.push({
+            type: 'tool_use',
+            id: tool.id,
+            name: tool.name,
+            input: tool.input
+          })
+        }
+      }
+      messages.push({ role: 'assistant', content })
+
+      // Add tool results as user message if tools were called
+      if (msg.toolCalls?.length) {
+        const toolResults: ContentBlock[] = msg.toolCalls.map(tool => ({
+          type: 'tool_result' as const,
+          tool_use_id: tool.id,
+          content: tool.output || '',
+          is_error: tool.status === 'error'
+        }))
+        messages.push({ role: 'user', content: toolResults })
+      }
+    }
+  }
+
+  // Add a continuation prompt
+  messages.push({
+    role: 'user',
+    content: 'Continue working on the task. You have more iterations available now.'
+  })
+
+  // Track history for UI expandable view (start from existing)
+  const history: Message[] = [...existingHistory, { role: 'user', content: 'Continue working on the task. You have more iterations available now.' }]
+
+  const toolCallHistory: ToolCallTracker[] = []
+  let iterations = 0
+  let finalOutput = ''
+
+  try {
+    while (iterations < maxIterations) {
+      iterations++
+
+      // Track tool calls from this iteration
+      const pendingTools: Map<string, { name: string; input: Record<string, unknown> }> = new Map()
+      let textContent = ''
+
+      // Stream from provider
+      for await (const event of provider.stream(messages, systemPrompt, subagentToolDefinitions)) {
+        switch (event.type) {
+          case 'text_delta':
+            textContent += event.delta
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'text_delta', delta: event.delta } }
+            break
+
+          case 'tool_start':
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_start', id: event.id, name: event.name } }
+            pendingTools.set(event.id, { name: event.name, input: {} })
+            break
+
+          case 'tool_input_delta':
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_input_delta', id: event.id, partialJson: event.partialJson } }
+            break
+
+          case 'tool_complete':
+            const tool = pendingTools.get(event.id)
+            if (tool) {
+              tool.input = event.input
+            }
+            break
+        }
+      }
+
+      // Track assistant message in history
+      if (textContent || pendingTools.size > 0) {
+        const toolCalls: ToolCall[] = []
+        for (const [id, tool] of pendingTools) {
+          toolCalls.push({
+            id,
+            name: tool.name,
+            input: tool.input,
+            status: 'pending'
+          })
+        }
+        history.push({
+          role: 'assistant',
+          content: textContent,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined
+        })
+      }
+
+      // If no tools were called, we're done
+      if (pendingTools.size === 0) {
+        finalOutput = textContent
+        break
+      }
+
+      // Build assistant message with tool uses
+      const assistantContent: ContentBlock[] = []
+      if (textContent) {
+        assistantContent.push({ type: 'text', text: textContent })
+      }
+      for (const [id, tool] of pendingTools) {
+        assistantContent.push({
+          type: 'tool_use',
+          id,
+          name: tool.name,
+          input: tool.input
+        })
+      }
+      messages.push({ role: 'assistant', content: assistantContent })
+
+      // Execute tools and collect results
+      const toolResults: ContentBlock[] = []
+
+      for (const [id, tool] of pendingTools) {
+        // Check for doom loop
+        if (checkDoomLoop(toolCallHistory, tool.name, tool.input)) {
+          const errorEvent: AgentEvent = {
+            type: 'tool_result',
+            id,
+            output: '',
+            error: `Doom loop detected: ${tool.name} called ${DOOM_LOOP_THRESHOLD}+ times with identical arguments.`
+          }
+          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: `Error: Detected repeated identical calls to ${tool.name}. Please try a different approach.`,
+            is_error: true
+          })
+
+          // Update history
+          const historyTool = history[history.length - 1]?.toolCalls?.find(t => t.id === id)
+          if (historyTool) {
+            historyTool.status = 'error'
+            historyTool.error = 'Doom loop detected'
+          }
+          continue
+        }
+
+        yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_running', id } }
+
+        try {
+          const result = await executeTool(tool.name, tool.input, workingDir)
+          const resultEvent: AgentEvent = {
+            type: 'tool_result',
+            id,
+            output: result.output,
+            details: result.details
+          }
+          yield { type: 'subagent_progress', taskId: task.id, event: resultEvent }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: result.output
+          })
+
+          // Update history
+          const historyTool = history[history.length - 1]?.toolCalls?.find(t => t.id === id)
+          if (historyTool) {
+            historyTool.status = 'done'
+            historyTool.output = result.output
+            historyTool.details = result.details
+          }
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+          const errorEvent: AgentEvent = {
+            type: 'tool_result',
+            id,
+            output: '',
+            error: errorMsg
+          }
+          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: `Error: ${errorMsg}`,
+            is_error: true
+          })
+
+          // Update history
+          const historyTool = history[history.length - 1]?.toolCalls?.find(t => t.id === id)
+          if (historyTool) {
+            historyTool.status = 'error'
+            historyTool.error = errorMsg
+          }
+        }
+      }
+
+      // Add tool results as user message
+      messages.push({ role: 'user', content: toolResults })
+    }
+
+    // If we hit max iterations without finishing, emit special event
+    if (iterations >= maxIterations && !finalOutput) {
+      yield {
+        type: 'subagent_max_iterations',
+        taskId: task.id,
+        iterations: maxIterations,
+        fullHistory: history
+      }
+      return
     }
 
     yield {

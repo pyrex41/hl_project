@@ -68,3 +68,4 @@ export type AgentEvent =
   | { type: 'subagent_progress'; taskId: string; event: AgentEvent }
   | { type: 'subagent_complete'; taskId: string; summary: string; fullHistory: Message[] }
   | { type: 'subagent_error'; taskId: string; error: string; fullHistory: Message[] }
+  | { type: 'subagent_max_iterations'; taskId: string; iterations: number; fullHistory: Message[] }
