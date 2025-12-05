@@ -79,6 +79,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       messages: openaiMessages,
       tools: openaiTools.length > 0 ? openaiTools : undefined,
       stream: true,
+      stream_options: { include_usage: true },
     })
 
     // Track tool calls being built
