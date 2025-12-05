@@ -406,18 +406,42 @@ function App() {
 
   const getShortModelName = (modelId: string | null) => {
     if (!modelId) return 'select model'
-    // Extract meaningful part of model name
-    // claude-sonnet-4-20250514 -> sonnet-4
-    // grok-3-beta -> grok-3
-    // gpt-4o -> gpt-4o
-    const parts = modelId.split('-')
+
+    // Claude: claude-sonnet-4-20250514 -> sonnet-4
+    // Remove date suffix (8 digits at end)
     if (modelId.startsWith('claude-')) {
-      return parts.slice(1, 3).join('-')
+      const withoutPrefix = modelId.slice(7) // remove 'claude-'
+      // Remove date suffix if present (e.g., -20250514)
+      return withoutPrefix.replace(/-\d{8}$/, '')
     }
+
+    // Grok: preserve variant info
+    // grok-3-beta -> grok-3-beta
+    // grok-4-1-fast-nonreasoning -> grok-4-1-fast
+    // grok-4 -> grok-4
     if (modelId.startsWith('grok-')) {
-      return parts.slice(0, 2).join('-')
+      // Remove verbose suffixes but keep important variant info
+      return modelId
+        .replace(/-nonreasoning$/, '')
+        .replace(/-reasoning$/, '')
     }
-    return parts.slice(0, 2).join('-')
+
+    // GPT/OpenAI: keep as-is mostly
+    // gpt-4o -> gpt-4o
+    // gpt-4o-mini -> gpt-4o-mini
+    // gpt-4-turbo-preview -> gpt-4-turbo
+    if (modelId.startsWith('gpt-')) {
+      return modelId.replace(/-preview$/, '')
+    }
+
+    // o1 models: keep as-is
+    // o1, o1-mini, o1-preview -> o1, o1-mini, o1
+    if (modelId.startsWith('o1')) {
+      return modelId.replace(/-preview$/, '')
+    }
+
+    // Default: remove date suffixes
+    return modelId.replace(/-\d{8}$/, '')
   }
 
   const getModelDisplayName = (model: ModelInfo) => {
