@@ -11,7 +11,7 @@ export interface ProviderConfig {
 // Supported providers and their default models (best/latest)
 export const PROVIDER_DEFAULTS: Record<ProviderName, { model: string; envKey: string }> = {
   anthropic: {
-    model: 'claude-opus-4-5-20250514',
+    model: 'claude-opus-4-5-20251101',
     envKey: 'ANTHROPIC_API_KEY'
   },
   xai: {
