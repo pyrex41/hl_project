@@ -156,6 +156,19 @@ body {
   color: var(--accent);
 }
 
+/* Provider-specific icon colors */
+.provider-anthropic {
+  color: #ef9a7c;  /* Anthropic orange/coral */
+}
+
+.provider-openai {
+  color: var(--green);  /* OpenAI green */
+}
+
+.provider-xai {
+  color: var(--accent);  /* xAI blue */
+}
+
 .provider-label {
   font-weight: 500;
 }

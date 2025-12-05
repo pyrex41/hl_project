@@ -1746,7 +1746,7 @@ function App() {
                 setShowProviders(!showProviders())
               }}
             >
-              <span class="provider-icon">{getProviderIcon(selectedProvider() || '')}</span>
+              <span class={`provider-icon provider-${selectedProvider() || ''}`}>{getProviderIcon(selectedProvider() || '')}</span>
               <span class="provider-label">{getProviderLabel(selectedProvider() || '')}</span>
               <span class="picker-arrow">▾</span>
             </button>
@@ -1771,7 +1771,7 @@ function App() {
                       class={`dropdown-item ${selectedProvider() === p.provider ? 'active' : ''}`}
                       onClick={() => handleProviderChange(p.provider)}
                     >
-                      <span class="item-icon">{getProviderIcon(p.provider)}</span>
+                      <span class={`item-icon provider-${p.provider}`}>{getProviderIcon(p.provider)}</span>
                       <span class="item-label">{getProviderLabel(p.provider)}</span>
                       <Show when={selectedProvider() === p.provider}>
                         <span class="item-check">✓</span>
