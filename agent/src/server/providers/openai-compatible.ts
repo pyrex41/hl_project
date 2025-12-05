@@ -47,17 +47,17 @@ export class OpenAICompatibleProvider implements LLMProvider {
     switch (this.name) {
       case 'xai':
         return [
+          { id: 'grok-4-0125', name: 'Grok 4' },
           { id: 'grok-3-beta', name: 'Grok 3 Beta' },
           { id: 'grok-3-fast-beta', name: 'Grok 3 Fast Beta' },
-          { id: 'grok-2-latest', name: 'Grok 2' },
         ]
       case 'openai':
         return [
-          { id: 'gpt-4o', name: 'GPT-4o' },
-          { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
-          { id: 'gpt-4-turbo', name: 'GPT-4 Turbo' },
-          { id: 'o1', name: 'o1' },
-          { id: 'o1-mini', name: 'o1 Mini' },
+          { id: 'gpt-4.1', name: 'GPT-4.1' },
+          { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini' },
+          { id: 'gpt-4.1-nano', name: 'GPT-4.1 Nano' },
+          { id: 'o3', name: 'o3' },
+          { id: 'o4-mini', name: 'o4 Mini' },
         ]
       default:
         return [{ id: this.model, name: this.model }]
@@ -248,7 +248,7 @@ export function createXAIProvider(apiKey?: string, model?: string): OpenAICompat
     name: 'xai',
     apiKey: apiKey || process.env.XAI_API_KEY || '',
     baseURL: 'https://api.x.ai/v1',
-    model: model || process.env.XAI_MODEL || 'grok-3-beta'
+    model: model || process.env.XAI_MODEL || 'grok-4-0125'
   })
 }
 
@@ -256,6 +256,6 @@ export function createOpenAIProvider(apiKey?: string, model?: string): OpenAICom
   return new OpenAICompatibleProvider({
     name: 'openai',
     apiKey: apiKey || process.env.OPENAI_API_KEY || '',
-    model: model || process.env.OPENAI_MODEL || 'gpt-4o'
+    model: model || process.env.OPENAI_MODEL || 'gpt-4.1'
   })
 }
