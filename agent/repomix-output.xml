@@ -1,0 +1,6374 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.agent/
+  config.json
+src/
+  client/
+    App.tsx
+    index.html
+    styles.css
+  server/
+    providers/
+      anthropic.ts
+      index.ts
+      openai-compatible.ts
+      types.ts
+    agent.ts
+    config.ts
+    index.ts
+    prompt.ts
+    sessions.ts
+    subagent.ts
+    tools.ts
+    types.ts
+thoughts/
+  plans/
+    parallel-subagents.md
+.env.example
+.gitignore
+CLAUDE.md
+package.json
+README.md
+tsconfig.json
+vite.config.ts
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".agent/config.json">
+{
+  "confirmMode": "always",
+  "timeout": 120,
+  "maxConcurrent": 5,
+  "roles": {
+    "simple": {
+      "provider": "xai",
+      "model": "grok-code-fast-1",
+      "maxIterations": 10
+    },
+    "complex": {
+      "provider": "xai",
+      "model": "grok-4-1-fast-reasoning",
+      "maxIterations": 25
+    },
+    "researcher": {
+      "provider": "xai",
+      "model": "grok-4-1-fast-reasoning",
+      "maxIterations": 15
+    }
+  }
+}
+</file>
+
+<file path="src/client/App.tsx">
+/* @refresh reload */
+import { render } from 'solid-js/web'
+import { createSignal, createEffect, For, Show, onMount } from 'solid-js'
+
+// Prompt suffix for parallel task execution
+const PARALLEL_PROMPT = `
+
+Use the task tool to spawn multiple subagents in parallel to accomplish this efficiently. Break down the work into independent subtasks that can run concurrently.`
+
+interface Message {
+  role: 'user' | 'assistant'
+  content: string
+  toolCalls?: ToolCall[]
+}
+
+interface ToolCall {
+  id: string
+  name: string
+  input: string
+  output?: string
+  status: 'pending' | 'running' | 'done' | 'error'
+  error?: string
+  details?: {
+    type: string
+    data: unknown
+  }
+}
+
+interface SessionSummary {
+  id: string
+  name?: string
+  updatedAt: string
+  messageCount: number
+}
+
+interface ProviderInfo {
+  provider: string
+  defaultModel: string
+}
+
+interface ModelInfo {
+  id: string
+  name: string
+  contextWindow?: number
+}
+
+// Subagent types
+type SubagentRole = 'simple' | 'complex' | 'researcher'
+
+interface SubagentTask {
+  id: string
+  description: string
+  role: SubagentRole
+  context?: string
+  provider?: string
+  model?: string
+}
+
+interface SubagentResult {
+  taskId: string
+  task: SubagentTask
+  summary: string
+  fullHistory: Message[]
+  status: 'running' | 'completed' | 'error' | 'cancelled'
+  error?: string
+}
+
+interface PendingConfirmation {
+  requestId: string
+  tasks: SubagentTask[]
+}
+
+// Configuration types
+interface MainChatConfig {
+  provider: string
+  model: string
+}
+
+interface RoleConfig {
+  provider: string
+  model: string
+  maxIterations: number
+}
+
+interface SubagentConfig {
+  confirmMode: 'always' | 'never' | 'multiple'
+  timeout: number
+  maxConcurrent: number
+  roles: Record<SubagentRole, RoleConfig>
+}
+
+interface FullConfig {
+  mainChat?: MainChatConfig
+  subagents: SubagentConfig
+}
+
+type AgentStatus = 'idle' | 'thinking' | 'executing' | 'error' | 'awaiting_confirmation'
+
+interface TokenUsage {
+  input: number
+  output: number
+}
+
+function App() {
+  const [messages, setMessages] = createSignal<Message[]>([])
+  const [input, setInput] = createSignal('')
+  const [status, setStatus] = createSignal<AgentStatus>('idle')
+  const [tokens, setTokens] = createSignal<TokenUsage>({ input: 0, output: 0 })
+  const [currentAssistant, setCurrentAssistant] = createSignal('')
+  const [currentTools, setCurrentTools] = createSignal<Map<string, ToolCall>>(new Map())
+  const [sessionId, setSessionId] = createSignal<string | null>(null)
+  const [sessions, setSessions] = createSignal<SessionSummary[]>([])
+  const [showSessions, setShowSessions] = createSignal(false)
+  const [providers, setProviders] = createSignal<ProviderInfo[]>([])
+  const [selectedProvider, setSelectedProvider] = createSignal<string | null>(null)
+  const [models, setModels] = createSignal<ModelInfo[]>([])
+  const [selectedModel, setSelectedModel] = createSignal<string | null>(null)
+  const [showProviders, setShowProviders] = createSignal(false)
+  const [showModels, setShowModels] = createSignal(false)
+  const [loadingModels, setLoadingModels] = createSignal(false)
+  // Subagent state
+  const [pendingConfirmation, setPendingConfirmation] = createSignal<PendingConfirmation | null>(null)
+  const [runningSubagents, setRunningSubagents] = createSignal<Map<string, SubagentResult>>(new Map())
+  const [completedSubagents, setCompletedSubagents] = createSignal<SubagentResult[]>([])
+  const [expandedSubagent, setExpandedSubagent] = createSignal<SubagentResult | null>(null)
+  // Settings state
+  const [showSettings, setShowSettings] = createSignal(false)
+  const [config, setConfig] = createSignal<FullConfig | null>(null)
+  const [editingConfig, setEditingConfig] = createSignal<FullConfig | null>(null)
+  const [savingConfig, setSavingConfig] = createSignal(false)
+  // Per-provider models cache for settings
+  const [settingsModels, setSettingsModels] = createSignal<Record<string, ModelInfo[]>>({})
+  let messagesEndRef: HTMLDivElement | undefined
+
+  // Load sessions and providers on mount
+  onMount(async () => {
+    // Load config first, then providers (so we can use config defaults)
+    await loadConfig()
+    await Promise.all([loadSessions(), loadProviders()])
+
+    // Global keyboard handler for Escape to close dropdowns
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowSessions(false)
+        setShowProviders(false)
+        setShowModels(false)
+        setShowSettings(false)
+      }
+    }
+
+    // Click outside handler to close dropdowns
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      // Close sessions panel if clicking outside
+      if (showSessions() && !target.closest('.sessions-panel') && !target.closest('.header-btn')) {
+        setShowSessions(false)
+      }
+      // Close provider/model dropdowns if clicking outside
+      if (!target.closest('.model-picker')) {
+        setShowProviders(false)
+        setShowModels(false)
+      }
+    }
+
+    document.addEventListener('keydown', handleKeyDown)
+    document.addEventListener('mousedown', handleClickOutside)
+  })
+
+  const loadProviders = async () => {
+    try {
+      const res = await fetch('/api/providers')
+      const data = await res.json()
+      setProviders(data.providers || [])
+
+      // Check if we have saved defaults in config
+      const savedConfig = config()
+      if (savedConfig?.mainChat && data.providers?.length > 0) {
+        // Use saved main chat config
+        const savedProvider = savedConfig.mainChat.provider
+        const savedModel = savedConfig.mainChat.model
+        // Verify the saved provider is still available
+        if (data.providers.some((p: ProviderInfo) => p.provider === savedProvider)) {
+          setSelectedProvider(savedProvider)
+          setSelectedModel(savedModel)
+          await loadModels(savedProvider)
+          return
+        }
+      }
+
+      // Fallback: select first available provider
+      if (data.providers?.length > 0 && !selectedProvider()) {
+        const firstProvider = data.providers[0]
+        setSelectedProvider(firstProvider.provider)
+        setSelectedModel(firstProvider.defaultModel)
+        await loadModels(firstProvider.provider)
+      }
+    } catch (e) {
+      console.error('Failed to load providers:', e)
+    }
+  }
+
+  const loadConfig = async () => {
+    try {
+      const res = await fetch('/api/config')
+      const data = await res.json()
+      setConfig(data.config || null)
+    } catch (e) {
+      console.error('Failed to load config:', e)
+    }
+  }
+
+  const saveConfigToServer = async (newConfig: FullConfig) => {
+    setSavingConfig(true)
+    try {
+      const res = await fetch('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: newConfig })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setConfig(data.config)
+        setEditingConfig(null)
+        setShowSettings(false)
+        // If main chat config changed, update the selected provider/model
+        if (newConfig.mainChat) {
+          setSelectedProvider(newConfig.mainChat.provider)
+          setSelectedModel(newConfig.mainChat.model)
+          await loadModels(newConfig.mainChat.provider)
+        }
+      }
+    } catch (e) {
+      console.error('Failed to save config:', e)
+    } finally {
+      setSavingConfig(false)
+    }
+  }
+
+  const loadModelsForProvider = async (provider: string) => {
+    // Check cache first
+    const cached = settingsModels()[provider]
+    if (cached) return cached
+
+    try {
+      const res = await fetch(`/api/providers/${provider}/models`)
+      const data = await res.json()
+      const models = data.models || []
+      setSettingsModels(prev => ({ ...prev, [provider]: models }))
+      return models
+    } catch (e) {
+      console.error(`Failed to load models for ${provider}:`, e)
+      return []
+    }
+  }
+
+  const openSettings = async () => {
+    // Load current config and start editing
+    await loadConfig()
+    const currentConfig = config()
+    if (currentConfig) {
+      // Deep clone for editing
+      setEditingConfig({
+        mainChat: currentConfig.mainChat ? { ...currentConfig.mainChat } : {
+          provider: selectedProvider() || 'anthropic',
+          model: selectedModel() || ''
+        },
+        subagents: {
+          ...currentConfig.subagents,
+          roles: { ...currentConfig.subagents.roles }
+        }
+      })
+      // Pre-load models for all configured providers (main chat + subagent roles)
+      const uniqueProviders = new Set([
+        currentConfig.mainChat?.provider || selectedProvider(),
+        ...Object.values(currentConfig.subagents.roles).map(r => r.provider)
+      ].filter(Boolean) as string[])
+      await Promise.all([...uniqueProviders].map(p => loadModelsForProvider(p)))
+    } else {
+      // No config yet, create default from current selection
+      setEditingConfig({
+        mainChat: {
+          provider: selectedProvider() || 'anthropic',
+          model: selectedModel() || ''
+        },
+        subagents: {
+          confirmMode: 'always',
+          timeout: 120,
+          maxConcurrent: 5,
+          roles: {
+            simple: { provider: 'anthropic', model: 'claude-3-5-haiku-20241022', maxIterations: 10 },
+            complex: { provider: 'anthropic', model: 'claude-opus-4-5-20251101', maxIterations: 25 },
+            researcher: { provider: 'anthropic', model: 'claude-sonnet-4-5-20250514', maxIterations: 15 }
+          }
+        }
+      })
+    }
+    setShowSettings(true)
+  }
+
+  const loadModels = async (provider: string) => {
+    setLoadingModels(true)
+    try {
+      const res = await fetch(`/api/providers/${provider}/models`)
+      const data = await res.json()
+      setModels(data.models || [])
+    } catch (e) {
+      console.error('Failed to load models:', e)
+      setModels([])
+    } finally {
+      setLoadingModels(false)
+    }
+  }
+
+  const handleProviderChange = async (provider: string) => {
+    setSelectedProvider(provider)
+    setShowProviders(false)
+    // Reset model and load models for new provider
+    const providerInfo = providers().find(p => p.provider === provider)
+    setSelectedModel(providerInfo?.defaultModel || null)
+    await loadModels(provider)
+  }
+
+  const loadSessions = async () => {
+    try {
+      const res = await fetch('/api/sessions')
+      const data = await res.json()
+      setSessions(data.sessions || [])
+    } catch (e) {
+      console.error('Failed to load sessions:', e)
+    }
+  }
+
+  const createNewSession = async () => {
+    try {
+      const res = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      })
+      const data = await res.json()
+      setSessionId(data.session.id)
+      setMessages([])
+      setTokens({ input: 0, output: 0 })
+      setShowSessions(false)
+      await loadSessions()
+    } catch (e) {
+      console.error('Failed to create session:', e)
+    }
+  }
+
+  const loadSession = async (id: string) => {
+    try {
+      const res = await fetch(`/api/sessions/${id}`)
+      const data = await res.json()
+      if (data.session) {
+        setSessionId(data.session.id)
+        setMessages(data.session.messages || [])
+        setTokens(data.session.metadata?.totalTokens || { input: 0, output: 0 })
+        setShowSessions(false)
+      }
+    } catch (e) {
+      console.error('Failed to load session:', e)
+    }
+  }
+
+  // Auto-scroll to bottom
+  createEffect(() => {
+    messages()
+    currentAssistant()
+    if (messagesEndRef) {
+      messagesEndRef.scrollIntoView({ behavior: 'smooth' })
+    }
+  })
+
+  const sendMessage = async (useParallel = false) => {
+    let msg = input().trim()
+    if (!msg || status() !== 'idle') return
+
+    // Append parallel prompt if shift+enter was used
+    if (useParallel) {
+      msg += PARALLEL_PROMPT
+    }
+
+    // Create a session if we don't have one
+    if (!sessionId()) {
+      await createNewSession()
+    }
+
+    setInput('')
+    setMessages(prev => [...prev, { role: 'user', content: msg }])
+    setStatus('thinking')
+    setCurrentAssistant('')
+    setCurrentTools(new Map())
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: msg,
+          history: messages().slice(0, -1), // Exclude the just-added user message
+          sessionId: sessionId(),
+          provider: selectedProvider(),
+          model: selectedModel(),
+        }),
+      })
+
+      if (!response.ok) throw new Error('Failed to connect to agent')
+
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('No response body')
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(line.slice(6))
+              handleEvent(event)
+            } catch (e) {
+              // Skip malformed events
+            }
+          }
+        }
+      }
+
+      // Finalize the assistant message
+      finalizeAssistantMessage()
+    } catch (error) {
+      setStatus('error')
+      console.error('Agent error:', error)
+    }
+  }
+
+  const handleEvent = (event: { type: string; [key: string]: unknown }) => {
+    switch (event.type) {
+      case 'text_delta':
+        setCurrentAssistant(prev => prev + (event.delta as string))
+        break
+
+      case 'tool_start':
+        setStatus('executing')
+        setCurrentTools(prev => {
+          const next = new Map(prev)
+          next.set(event.id as string, {
+            id: event.id as string,
+            name: event.name as string,
+            input: '',
+            status: 'pending',
+          })
+          return next
+        })
+        break
+
+      case 'tool_input_delta':
+        setCurrentTools(prev => {
+          const next = new Map(prev)
+          const tool = next.get(event.id as string)
+          if (tool) {
+            tool.input = event.partialJson as string
+          }
+          return next
+        })
+        break
+
+      case 'tool_running':
+        setCurrentTools(prev => {
+          const next = new Map(prev)
+          const tool = next.get(event.id as string)
+          if (tool) {
+            tool.status = 'running'
+          }
+          return next
+        })
+        break
+
+      case 'tool_result':
+        setCurrentTools(prev => {
+          const next = new Map(prev)
+          const tool = next.get(event.id as string)
+          if (tool) {
+            tool.status = event.error ? 'error' : 'done'
+            tool.output = event.output as string
+            tool.error = event.error as string | undefined
+            tool.details = event.details as ToolCall['details']
+          }
+          return next
+        })
+        setStatus('thinking')
+        break
+
+      case 'turn_complete':
+        const usage = event.usage as { inputTokens: number; outputTokens: number } | undefined
+        if (usage) {
+          setTokens(prev => ({
+            input: prev.input + usage.inputTokens,
+            output: prev.output + usage.outputTokens,
+          }))
+        }
+        setStatus('idle')
+        break
+
+      case 'error':
+        setStatus('error')
+        setCurrentAssistant(prev => prev + `\n\nError: ${event.error}`)
+        break
+
+      case 'retry_countdown':
+        setCurrentAssistant(prev =>
+          prev + `\n[Rate limited - retrying in ${event.seconds}s...]`
+        )
+        break
+
+      case 'session_updated':
+        // Session was saved, refresh the list
+        loadSessions()
+        break
+
+      // Subagent events
+      case 'subagent_request':
+        setStatus('awaiting_confirmation')
+        setPendingConfirmation({
+          requestId: event.requestId as string,
+          tasks: event.tasks as SubagentTask[]
+        })
+        break
+
+      case 'subagent_confirmed':
+        setPendingConfirmation(null)
+        setStatus('executing')
+        break
+
+      case 'subagent_cancelled':
+        setPendingConfirmation(null)
+        setStatus('thinking')
+        break
+
+      case 'subagent_start':
+        setRunningSubagents(prev => {
+          const next = new Map(prev)
+          next.set(event.taskId as string, {
+            taskId: event.taskId as string,
+            task: {
+              id: event.taskId as string,
+              description: event.description as string,
+              role: event.role as SubagentRole
+            },
+            summary: '',
+            fullHistory: [],
+            status: 'running'
+          })
+          return next
+        })
+        break
+
+      case 'subagent_progress':
+        // Update the running subagent with progress (could track more detail)
+        break
+
+      case 'subagent_complete':
+        setRunningSubagents(prev => {
+          const next = new Map(prev)
+          const existing = next.get(event.taskId as string)
+          if (existing) {
+            existing.status = 'completed'
+            existing.summary = event.summary as string
+            existing.fullHistory = event.fullHistory as Message[]
+            // Move to completed
+            setCompletedSubagents(c => [...c, { ...existing }])
+          }
+          next.delete(event.taskId as string)
+          return next
+        })
+        break
+
+      case 'subagent_error':
+        setRunningSubagents(prev => {
+          const next = new Map(prev)
+          const existing = next.get(event.taskId as string)
+          if (existing) {
+            existing.status = 'error'
+            existing.error = event.error as string
+            existing.fullHistory = event.fullHistory as Message[]
+            setCompletedSubagents(c => [...c, { ...existing }])
+          }
+          next.delete(event.taskId as string)
+          return next
+        })
+        break
+    }
+  }
+
+  const finalizeAssistantMessage = () => {
+    const content = currentAssistant()
+    const tools = Array.from(currentTools().values())
+
+    if (content || tools.length > 0) {
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content,
+          toolCalls: tools.length > 0 ? tools : undefined,
+        },
+      ])
+    }
+
+    setCurrentAssistant('')
+    setCurrentTools(new Map())
+    setStatus('idle')
+  }
+
+  const formatTokens = (n: number) => {
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+    return n.toString()
+  }
+
+  const formatDate = (isoDate: string) => {
+    const date = new Date(isoDate)
+    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+
+  const renderToolOutput = (tool: ToolCall) => {
+    if (tool.error) {
+      return <div class="tool-output" style="color: var(--red)">{tool.error}</div>
+    }
+    if (!tool.output) return null
+
+    // Render diff specially
+    if (tool.details?.type === 'diff') {
+      const data = tool.details.data as { before: string; after: string }
+      return (
+        <div class="tool-output">
+          {data.before.split('\n').map(line => (
+            <div class="diff-line-remove">- {line}</div>
+          ))}
+          {data.after.split('\n').map(line => (
+            <div class="diff-line-add">+ {line}</div>
+          ))}
+        </div>
+      )
+    }
+
+    // Truncate long output
+    const output = tool.output.length > 2000
+      ? tool.output.slice(0, 2000) + '\n[Output truncated...]'
+      : tool.output
+
+    return <div class="tool-output">{output}</div>
+  }
+
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      // Shift+Enter triggers parallel mode
+      sendMessage(e.shiftKey)
+    }
+  }
+
+  const startNewChat = async () => {
+    // Clear state for a fresh session (session will be created on first message)
+    setSessionId(null)
+    setMessages([])
+    setTokens({ input: 0, output: 0 })
+    setShowSessions(false)
+    // Refresh the sessions list so the old session appears
+    await loadSessions()
+  }
+
+  const getProviderIcon = (provider: string) => {
+    const icons: Record<string, string> = {
+      anthropic: '◈',
+      xai: '✧',
+      openai: '◉'
+    }
+    return icons[provider] || '○'
+  }
+
+  const getProviderLabel = (provider: string) => {
+    const labels: Record<string, string> = {
+      anthropic: 'Anthropic',
+      xai: 'xAI',
+      openai: 'OpenAI'
+    }
+    return labels[provider] || provider
+  }
+
+  const getShortModelName = (modelId: string | null) => {
+    if (!modelId) return 'select model'
+
+    // Claude: claude-sonnet-4-20250514 -> sonnet-4
+    // Remove date suffix (8 digits at end)
+    if (modelId.startsWith('claude-')) {
+      const withoutPrefix = modelId.slice(7) // remove 'claude-'
+      // Remove date suffix if present (e.g., -20250514)
+      return withoutPrefix.replace(/-\d{8}$/, '')
+    }
+
+    // Grok: preserve variant info
+    // grok-3-beta -> grok-3-beta
+    // grok-4-1-fast-nonreasoning -> grok-4-1-fast
+    // grok-4 -> grok-4
+    if (modelId.startsWith('grok-')) {
+      // Remove verbose suffixes but keep important variant info
+      return modelId
+        .replace(/-nonreasoning$/, '')
+        .replace(/-reasoning$/, '')
+    }
+
+    // GPT/OpenAI: keep as-is mostly
+    // gpt-4o -> gpt-4o
+    // gpt-4o-mini -> gpt-4o-mini
+    // gpt-4-turbo-preview -> gpt-4-turbo
+    if (modelId.startsWith('gpt-')) {
+      return modelId.replace(/-preview$/, '')
+    }
+
+    // o1 models: keep as-is
+    // o1, o1-mini, o1-preview -> o1, o1-mini, o1
+    if (modelId.startsWith('o1')) {
+      return modelId.replace(/-preview$/, '')
+    }
+
+    // Default: remove date suffixes
+    return modelId.replace(/-\d{8}$/, '')
+  }
+
+  const getModelDisplayName = (model: ModelInfo) => {
+    if (model.name && model.name !== model.id) {
+      return model.name
+    }
+    return model.id
+  }
+
+  const closeAllDropdowns = () => {
+    setShowProviders(false)
+    setShowModels(false)
+  }
+
+  // Subagent confirmation handlers
+  const confirmSubagents = async (tasks: SubagentTask[]) => {
+    const confirmation = pendingConfirmation()
+    if (!confirmation) return
+
+    try {
+      await fetch('/api/subagents/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: confirmation.requestId,
+          confirmed: true,
+          tasks
+        })
+      })
+    } catch (e) {
+      console.error('Failed to confirm subagents:', e)
+    }
+  }
+
+  const cancelSubagents = async () => {
+    const confirmation = pendingConfirmation()
+    if (!confirmation) return
+
+    try {
+      await fetch('/api/subagents/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: confirmation.requestId,
+          confirmed: false
+        })
+      })
+    } catch (e) {
+      console.error('Failed to cancel subagents:', e)
+    }
+    setPendingConfirmation(null)
+    setStatus('thinking')
+  }
+
+  const getRoleBadgeClass = (role: SubagentRole) => {
+    const classes: Record<SubagentRole, string> = {
+      simple: 'role-badge-simple',
+      complex: 'role-badge-complex',
+      researcher: 'role-badge-researcher'
+    }
+    return classes[role] || ''
+  }
+
+  return (
+    <>
+      <header class="header">
+        <div class="header-left">
+          <span class="header-title">agent</span>
+          <span class="header-version">v0.1</span>
+          <div class="header-divider" />
+          <button
+            class="header-btn"
+            onClick={() => setShowSessions(!showSessions())}
+            title="Sessions (Ctrl+S)"
+          >
+            <span class="btn-icon">≡</span>
+          </button>
+          <button
+            class="header-btn"
+            onClick={startNewChat}
+            title="New Chat (Ctrl+N)"
+          >
+            <span class="btn-icon">+</span>
+          </button>
+          <button
+            class="header-btn"
+            onClick={openSettings}
+            title="Settings"
+          >
+            <span class="btn-icon">⚙</span>
+          </button>
+        </div>
+
+        <div class="header-center">
+          <div class="model-picker">
+            <button
+              class="model-picker-btn"
+              onClick={() => {
+                setShowModels(false)
+                setShowProviders(!showProviders())
+              }}
+            >
+              <span class="provider-icon">{getProviderIcon(selectedProvider() || '')}</span>
+              <span class="provider-label">{getProviderLabel(selectedProvider() || '')}</span>
+              <span class="picker-arrow">▾</span>
+            </button>
+            <span class="model-separator">/</span>
+            <button
+              class="model-picker-btn model-btn"
+              onClick={() => {
+                setShowProviders(false)
+                setShowModels(!showModels())
+              }}
+            >
+              <span class="model-label">{getShortModelName(selectedModel())}</span>
+              <span class="picker-arrow">▾</span>
+            </button>
+
+            <Show when={showProviders()}>
+              <div class="picker-dropdown provider-dropdown">
+                <div class="dropdown-header">Select Provider</div>
+                <For each={providers()}>
+                  {(p) => (
+                    <button
+                      class={`dropdown-item ${selectedProvider() === p.provider ? 'active' : ''}`}
+                      onClick={() => handleProviderChange(p.provider)}
+                    >
+                      <span class="item-icon">{getProviderIcon(p.provider)}</span>
+                      <span class="item-label">{getProviderLabel(p.provider)}</span>
+                      <Show when={selectedProvider() === p.provider}>
+                        <span class="item-check">✓</span>
+                      </Show>
+                    </button>
+                  )}
+                </For>
+                <Show when={providers().length === 0}>
+                  <div class="dropdown-empty">No providers configured</div>
+                </Show>
+              </div>
+            </Show>
+
+            <Show when={showModels()}>
+              <div class="picker-dropdown model-dropdown">
+                <div class="dropdown-header">
+                  Select Model
+                  <Show when={loadingModels()}>
+                    <span class="loading-indicator">...</span>
+                  </Show>
+                </div>
+                <Show when={!loadingModels()}>
+                  <For each={models()}>
+                    {(m) => (
+                      <button
+                        class={`dropdown-item ${selectedModel() === m.id ? 'active' : ''}`}
+                        onClick={() => {
+                          setSelectedModel(m.id)
+                          setShowModels(false)
+                        }}
+                      >
+                        <span class="item-label">{getModelDisplayName(m)}</span>
+                        <Show when={selectedModel() === m.id}>
+                          <span class="item-check">✓</span>
+                        </Show>
+                      </button>
+                    )}
+                  </For>
+                  <Show when={models().length === 0}>
+                    <div class="dropdown-empty">No models available</div>
+                  </Show>
+                </Show>
+              </div>
+            </Show>
+          </div>
+        </div>
+
+        <div class="header-right">
+          <div class="status-indicator">
+            <span class={`status-dot ${status()}`} />
+            <span class="status-text">{status()}</span>
+          </div>
+          <div class="header-divider" />
+          <div class="token-count">
+            <span class="token-label">tokens</span>
+            <span class="token-value">{formatTokens(tokens().input + tokens().output)}</span>
+          </div>
+        </div>
+      </header>
+
+      {/* Sessions sidebar */}
+      <Show when={showSessions()}>
+        <div class="sessions-panel">
+          <div class="sessions-header">Sessions</div>
+          <div class="sessions-list">
+            <For each={sessions()}>
+              {(session) => (
+                <div
+                  class={`session-item ${sessionId() === session.id ? 'active' : ''}`}
+                  onClick={() => loadSession(session.id)}
+                >
+                  <div class="session-name">{session.name || `Session ${session.id.slice(0, 8)}`}</div>
+                  <div class="session-meta">
+                    {session.messageCount} messages · {formatDate(session.updatedAt)}
+                  </div>
+                </div>
+              )}
+            </For>
+            <Show when={sessions().length === 0}>
+              <div class="session-empty">No saved sessions</div>
+            </Show>
+          </div>
+        </div>
+      </Show>
+
+      <div class="messages">
+        <For each={messages()}>
+          {(msg) => (
+            <div class="message">
+              <Show when={msg.role === 'user'}>
+                <div class="message-user">{msg.content}</div>
+              </Show>
+              <Show when={msg.role === 'assistant'}>
+                <Show when={msg.toolCalls}>
+                  <For each={msg.toolCalls}>
+                    {(tool) => (
+                      <div class="tool-call">
+                        <div class="tool-header">
+                          <span class="tool-name">{tool.name}</span>
+                          <span class={`tool-status ${tool.status}`}>
+                            {tool.status === 'running' && <span class="spinner" />}
+                            {tool.status === 'done' && '✓'}
+                            {tool.status === 'error' && '✗'}
+                            {tool.status}
+                          </span>
+                        </div>
+                        <Show when={tool.input}>
+                          <div class="tool-input">{formatToolInput(tool.name, tool.input)}</div>
+                        </Show>
+                        {renderToolOutput(tool)}
+                      </div>
+                    )}
+                  </For>
+                </Show>
+                <Show when={msg.content}>
+                  <div class="message-assistant">{msg.content}</div>
+                </Show>
+              </Show>
+            </div>
+          )}
+        </For>
+
+        {/* Current streaming content */}
+        <Show when={currentAssistant() || currentTools().size > 0}>
+          <div class="message">
+            <Show when={currentTools().size > 0}>
+              <For each={Array.from(currentTools().values())}>
+                {(tool) => (
+                  <div class="tool-call">
+                    <div class="tool-header">
+                      <span class="tool-name">{tool.name}</span>
+                      <span class={`tool-status ${tool.status}`}>
+                        {(tool.status === 'pending' || tool.status === 'running') && <span class="spinner" />}
+                        {tool.status === 'done' && '✓'}
+                        {tool.status === 'error' && '✗'}
+                        {tool.status}
+                      </span>
+                    </div>
+                    <Show when={tool.input}>
+                      <div class="tool-input">{formatToolInput(tool.name, tool.input)}</div>
+                    </Show>
+                    {renderToolOutput(tool)}
+                  </div>
+                )}
+              </For>
+            </Show>
+            <Show when={currentAssistant()}>
+              <div class="message-assistant">{currentAssistant()}</div>
+            </Show>
+          </div>
+        </Show>
+
+        {/* Inline Running Subagents */}
+        <For each={Array.from(runningSubagents().values())}>
+          {(subagent) => (
+            <div class="message">
+              <div class="subagent-card-inline running">
+                <div class="subagent-card-header">
+                  <span class={`role-badge ${getRoleBadgeClass(subagent.task.role)}`}>{subagent.task.role}</span>
+                  <span class="subagent-card-desc">{subagent.task.description}</span>
+                </div>
+                <div class="subagent-card-status">
+                  <span class="spinner" /> Running...
+                </div>
+              </div>
+            </div>
+          )}
+        </For>
+
+        {/* Inline Completed Subagents */}
+        <For each={completedSubagents()}>
+          {(subagent) => (
+            <div class="message">
+              <div
+                class={`subagent-card-inline completed ${subagent.status === 'error' ? 'error' : ''}`}
+                onClick={() => setExpandedSubagent(subagent)}
+              >
+                <div class="subagent-card-header">
+                  <span class={`role-badge ${getRoleBadgeClass(subagent.task.role)}`}>{subagent.task.role}</span>
+                  <span class="subagent-card-desc">{subagent.task.description}</span>
+                  <span class="expand-hint">Click to expand</span>
+                </div>
+                <div class="subagent-card-summary">
+                  {subagent.status === 'error' ? subagent.error : subagent.summary.slice(0, 200)}
+                  {subagent.summary.length > 200 ? '...' : ''}
+                </div>
+              </div>
+            </div>
+          )}
+        </For>
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div class="input-area">
+        <div class="input-wrapper">
+          <span class="input-prompt">&gt;</span>
+          <input
+            type="text"
+            class="input-field"
+            placeholder={status() === 'idle' ? 'Type a message... (Shift+Enter for parallel)' : 'Agent is working...'}
+            value={input()}
+            onInput={(e) => setInput(e.currentTarget.value)}
+            onKeyDown={handleKeyDown}
+            disabled={status() !== 'idle'}
+          />
+        </div>
+      </div>
+
+      {/* Subagent Confirmation Dialog */}
+      <Show when={pendingConfirmation()}>
+        {(confirmation) => (
+          <div class="subagent-confirm-overlay" onClick={() => cancelSubagents()}>
+            <div class="subagent-confirm-dialog" onClick={(e) => e.stopPropagation()}>
+              <h3>Spawn {confirmation().tasks.length} Subagent{confirmation().tasks.length > 1 ? 's' : ''}?</h3>
+              <div class="subagent-list">
+                <For each={confirmation().tasks}>
+                  {(task) => (
+                    <div class="subagent-item">
+                      <div class="subagent-item-header">
+                        <span class={`role-badge ${getRoleBadgeClass(task.role)}`}>{task.role}</span>
+                        <span class="subagent-description">{task.description}</span>
+                      </div>
+                      <div class="subagent-item-config">
+                        <select
+                          class="subagent-select"
+                          value={task.provider || selectedProvider() || ''}
+                          onChange={(e) => {
+                            const newTasks = [...confirmation().tasks]
+                            const idx = newTasks.findIndex(t => t.id === task.id)
+                            if (idx >= 0) {
+                              newTasks[idx] = { ...task, provider: e.currentTarget.value }
+                              setPendingConfirmation({ ...confirmation(), tasks: newTasks })
+                            }
+                          }}
+                        >
+                          <For each={providers()}>
+                            {(p) => <option value={p.provider}>{getProviderLabel(p.provider)}</option>}
+                          </For>
+                        </select>
+                        <select
+                          class="subagent-select"
+                          value={task.model || selectedModel() || ''}
+                          onChange={(e) => {
+                            const newTasks = [...confirmation().tasks]
+                            const idx = newTasks.findIndex(t => t.id === task.id)
+                            if (idx >= 0) {
+                              newTasks[idx] = { ...task, model: e.currentTarget.value }
+                              setPendingConfirmation({ ...confirmation(), tasks: newTasks })
+                            }
+                          }}
+                        >
+                          <For each={models()}>
+                            {(m) => <option value={m.id}>{getShortModelName(m.id)}</option>}
+                          </For>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </div>
+              <div class="dialog-actions">
+                <button class="dialog-btn cancel" onClick={() => cancelSubagents()}>Cancel</button>
+                <button class="dialog-btn confirm" onClick={() => confirmSubagents(confirmation().tasks)}>
+                  Spawn Agents
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Show>
+
+      {/* Expanded Subagent Window */}
+      <Show when={expandedSubagent()}>
+        {(subagent) => (
+          <div class="subagent-window-overlay" onClick={() => setExpandedSubagent(null)}>
+            <div class="subagent-window" onClick={(e) => e.stopPropagation()}>
+              <div class="subagent-window-header">
+                <span class={`role-badge ${getRoleBadgeClass(subagent().task.role)}`}>{subagent().task.role}</span>
+                <span class="subagent-window-desc">{subagent().task.description}</span>
+                <button class="close-btn" onClick={() => setExpandedSubagent(null)}>×</button>
+              </div>
+              <div class="subagent-window-content">
+                <For each={subagent().fullHistory}>
+                  {(msg) => (
+                    <div class="subagent-message">
+                      <Show when={msg.role === 'user'}>
+                        <div class="message-user">{msg.content}</div>
+                      </Show>
+                      <Show when={msg.role === 'assistant'}>
+                        <Show when={msg.toolCalls}>
+                          <For each={msg.toolCalls}>
+                            {(tool) => (
+                              <div class="tool-call">
+                                <div class="tool-header">
+                                  <span class="tool-name">{tool.name}</span>
+                                  <span class={`tool-status ${tool.status}`}>
+                                    {tool.status === 'done' && '✓'}
+                                    {tool.status === 'error' && '✗'}
+                                  </span>
+                                </div>
+                                <Show when={tool.input}>
+                                  <div class="tool-input">{formatToolInput(tool.name, typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input))}</div>
+                                </Show>
+                                <Show when={tool.output}>
+                                  <div class="tool-output">{tool.output}</div>
+                                </Show>
+                              </div>
+                            )}
+                          </For>
+                        </Show>
+                        <Show when={msg.content}>
+                          <div class="message-assistant">{msg.content}</div>
+                        </Show>
+                      </Show>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </div>
+          </div>
+        )}
+      </Show>
+
+      {/* Settings Dialog */}
+      <Show when={showSettings() && editingConfig()}>
+        {(cfg) => (
+          <div class="settings-overlay" onClick={() => setShowSettings(false)}>
+            <div class="settings-dialog" onClick={(e) => e.stopPropagation()}>
+              <div class="settings-header">
+                <h2>Settings</h2>
+                <button class="close-btn" onClick={() => setShowSettings(false)}>×</button>
+              </div>
+
+              <div class="settings-content">
+                {/* Main Chat Settings */}
+                <div class="settings-section">
+                  <h3>Main Chat</h3>
+                  <p class="settings-hint">Default provider and model for new conversations.</p>
+
+                  <div class="settings-row">
+                    <label>Provider</label>
+                    <select
+                      value={cfg().mainChat?.provider || ''}
+                      onChange={async (e) => {
+                        const newProvider = e.currentTarget.value
+                        await loadModelsForProvider(newProvider)
+                        const providerInfo = providers().find(p => p.provider === newProvider)
+                        setEditingConfig(prev => {
+                          if (!prev) return null
+                          return {
+                            ...prev,
+                            mainChat: {
+                              provider: newProvider,
+                              model: providerInfo?.defaultModel || prev.mainChat?.model || ''
+                            }
+                          }
+                        })
+                      }}
+                    >
+                      <For each={providers()}>
+                        {(p) => <option value={p.provider}>{getProviderLabel(p.provider)}</option>}
+                      </For>
+                    </select>
+                  </div>
+
+                  <div class="settings-row">
+                    <label>Model</label>
+                    <select
+                      value={cfg().mainChat?.model || ''}
+                      onChange={(e) => {
+                        setEditingConfig(prev => {
+                          if (!prev) return null
+                          return {
+                            ...prev,
+                            mainChat: {
+                              provider: prev.mainChat?.provider || '',
+                              model: e.currentTarget.value
+                            }
+                          }
+                        })
+                      }}
+                    >
+                      <For each={settingsModels()[cfg().mainChat?.provider || ''] || []}>
+                        {(m) => <option value={m.id}>{getShortModelName(m.id)}</option>}
+                      </For>
+                      {/* Show current model even if not in list */}
+                      <Show when={cfg().mainChat?.model && !settingsModels()[cfg().mainChat?.provider || '']?.some(m => m.id === cfg().mainChat?.model)}>
+                        <option value={cfg().mainChat?.model}>{getShortModelName(cfg().mainChat?.model || '')}</option>
+                      </Show>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Subagent General Settings */}
+                <div class="settings-section">
+                  <h3>Subagents</h3>
+
+                  <div class="settings-row">
+                    <label>Confirmation Mode</label>
+                    <select
+                      value={cfg().subagents.confirmMode}
+                      onChange={(e) => setEditingConfig(prev => prev ? {
+                        ...prev,
+                        subagents: { ...prev.subagents, confirmMode: e.currentTarget.value as 'always' | 'never' | 'multiple' }
+                      } : null)}
+                    >
+                      <option value="always">Always confirm</option>
+                      <option value="multiple">Only for multiple agents</option>
+                      <option value="never">Never confirm</option>
+                    </select>
+                  </div>
+
+                  <div class="settings-row">
+                    <label>Timeout (seconds)</label>
+                    <input
+                      type="number"
+                      min="30"
+                      max="600"
+                      value={cfg().subagents.timeout}
+                      onChange={(e) => setEditingConfig(prev => prev ? {
+                        ...prev,
+                        subagents: { ...prev.subagents, timeout: parseInt(e.currentTarget.value) || 120 }
+                      } : null)}
+                    />
+                  </div>
+
+                  <div class="settings-row">
+                    <label>Max Concurrent</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={cfg().subagents.maxConcurrent}
+                      onChange={(e) => setEditingConfig(prev => prev ? {
+                        ...prev,
+                        subagents: { ...prev.subagents, maxConcurrent: parseInt(e.currentTarget.value) || 5 }
+                      } : null)}
+                    />
+                  </div>
+                </div>
+
+                {/* Role Settings */}
+                <div class="settings-section">
+                  <h3>Subagent Role Defaults</h3>
+                  <p class="settings-hint">Default provider/model for each role. Can be overridden per-task.</p>
+
+                  <For each={(['simple', 'complex', 'researcher'] as SubagentRole[])}>
+                    {(role) => (
+                      <div class="role-config">
+                        <div class="role-config-header">
+                          <span class={`role-badge ${getRoleBadgeClass(role)}`}>{role}</span>
+                        </div>
+                        <div class="role-config-fields">
+                          <div class="settings-row">
+                            <label>Provider</label>
+                            <select
+                              value={cfg().subagents.roles[role].provider}
+                              onChange={async (e) => {
+                                const newProvider = e.currentTarget.value
+                                await loadModelsForProvider(newProvider)
+                                const providerInfo = providers().find(p => p.provider === newProvider)
+                                setEditingConfig(prev => {
+                                  if (!prev) return null
+                                  return {
+                                    ...prev,
+                                    subagents: {
+                                      ...prev.subagents,
+                                      roles: {
+                                        ...prev.subagents.roles,
+                                        [role]: {
+                                          ...prev.subagents.roles[role],
+                                          provider: newProvider,
+                                          model: providerInfo?.defaultModel || prev.subagents.roles[role].model
+                                        }
+                                      }
+                                    }
+                                  }
+                                })
+                              }}
+                            >
+                              <For each={providers()}>
+                                {(p) => <option value={p.provider}>{getProviderLabel(p.provider)}</option>}
+                              </For>
+                            </select>
+                          </div>
+                          <div class="settings-row">
+                            <label>Model</label>
+                            <select
+                              value={cfg().subagents.roles[role].model}
+                              onChange={(e) => {
+                                setEditingConfig(prev => {
+                                  if (!prev) return null
+                                  return {
+                                    ...prev,
+                                    subagents: {
+                                      ...prev.subagents,
+                                      roles: {
+                                        ...prev.subagents.roles,
+                                        [role]: {
+                                          ...prev.subagents.roles[role],
+                                          model: e.currentTarget.value
+                                        }
+                                      }
+                                    }
+                                  }
+                                })
+                              }}
+                            >
+                              <For each={settingsModels()[cfg().subagents.roles[role].provider] || []}>
+                                {(m) => <option value={m.id}>{getShortModelName(m.id)}</option>}
+                              </For>
+                              {/* Show current model even if not in list */}
+                              <Show when={!settingsModels()[cfg().subagents.roles[role].provider]?.some(m => m.id === cfg().subagents.roles[role].model)}>
+                                <option value={cfg().subagents.roles[role].model}>{getShortModelName(cfg().subagents.roles[role].model)}</option>
+                              </Show>
+                            </select>
+                          </div>
+                          <div class="settings-row">
+                            <label>Max Iterations</label>
+                            <input
+                              type="number"
+                              min="1"
+                              max="100"
+                              value={cfg().subagents.roles[role].maxIterations}
+                              onChange={(e) => {
+                                setEditingConfig(prev => {
+                                  if (!prev) return null
+                                  return {
+                                    ...prev,
+                                    subagents: {
+                                      ...prev.subagents,
+                                      roles: {
+                                        ...prev.subagents.roles,
+                                        [role]: {
+                                          ...prev.subagents.roles[role],
+                                          maxIterations: parseInt(e.currentTarget.value) || 10
+                                        }
+                                      }
+                                    }
+                                  }
+                                })
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </div>
+
+              <div class="settings-footer">
+                <button class="dialog-btn cancel" onClick={() => setShowSettings(false)}>Cancel</button>
+                <button
+                  class="dialog-btn confirm"
+                  disabled={savingConfig()}
+                  onClick={() => {
+                    const toSave = editingConfig()
+                    if (toSave) saveConfigToServer(toSave)
+                  }}
+                >
+                  {savingConfig() ? 'Saving...' : 'Save Settings'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Show>
+    </>
+  )
+}
+
+// Helper to format tool input for display
+function formatToolInput(name: string, input: string): string {
+  try {
+    const parsed = JSON.parse(input)
+    switch (name) {
+      case 'read_file':
+        return parsed.path + (parsed.offset ? `:${parsed.offset}` : '') + (parsed.limit ? `-${parsed.limit}` : '')
+      case 'write_file':
+        return `${parsed.path} (${parsed.content?.length || 0} chars)`
+      case 'edit_file':
+        return parsed.path
+      case 'bash':
+        return parsed.command
+      default:
+        return JSON.stringify(parsed, null, 2)
+    }
+  } catch {
+    return input
+  }
+}
+
+render(() => <App />, document.getElementById('root')!)
+</file>
+
+<file path="src/client/index.html">
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>agent</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./App.tsx"></script>
+  </body>
+</html>
+</file>
+
+<file path="src/client/styles.css">
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #1c2128;
+  --border: #30363d;
+  --border-light: #3d444d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --text-dim: #6e7681;
+  --accent: #58a6ff;
+  --accent-dim: #388bfd;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --purple: #a371f7;
+}
+
+body {
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* Header */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 16px;
+  height: 42px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.header-left,
+.header-center,
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-left {
+  flex: 1;
+}
+
+.header-center {
+  flex: 0 0 auto;
+}
+
+.header-right {
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.header-title {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.header-version {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.header-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+.header-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+
+.header-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.btn-icon {
+  font-size: 16px;
+}
+
+/* Model Picker */
+.model-picker {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.model-picker-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+}
+
+.model-picker-btn:hover {
+  background: var(--bg-secondary);
+}
+
+.provider-icon {
+  font-size: 14px;
+  color: var(--accent);
+}
+
+.provider-label {
+  font-weight: 500;
+}
+
+.model-separator {
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.model-label {
+  color: var(--text-muted);
+}
+
+.model-btn {
+  min-width: 100px;
+}
+
+.picker-arrow {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-left: 2px;
+}
+
+/* Dropdown */
+.picker-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  min-width: 220px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  overflow: hidden;
+  animation: dropdownIn 0.15s ease;
+}
+
+.provider-dropdown {
+  left: 0;
+}
+
+.model-dropdown {
+  right: 0;
+  min-width: 280px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+@keyframes dropdownIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dropdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.loading-indicator {
+  color: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  transition: background 0.1s ease;
+}
+
+.dropdown-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.dropdown-item.active {
+  background: var(--bg-tertiary);
+  color: var(--accent);
+}
+
+.item-icon {
+  width: 20px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.item-label {
+  flex: 1;
+}
+
+.item-check {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.dropdown-empty {
+  padding: 20px 14px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Status indicator */
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.status-dot.thinking,
+.status-dot.executing {
+  background: var(--yellow);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.status-dot.error {
+  background: var(--red);
+}
+
+.status-text {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* Token count */
+.token-count {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.token-label {
+  color: var(--text-dim);
+}
+
+.token-value {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Messages area */
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.message {
+  max-width: 100%;
+}
+
+.message-user {
+  color: var(--accent);
+}
+
+.message-user::before {
+  content: '> ';
+  color: var(--text-dim);
+}
+
+.message-assistant {
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+/* Tool calls */
+.tool-call {
+  margin: 8px 0;
+  padding: 10px 14px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.tool-name {
+  color: var(--purple);
+  font-weight: 500;
+}
+
+.tool-status {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tool-status.running,
+.tool-status.pending {
+  color: var(--yellow);
+}
+
+.tool-status.done {
+  color: var(--green);
+}
+
+.tool-status.error {
+  color: var(--red);
+}
+
+.tool-input {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  padding: 6px 8px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+}
+
+.tool-output {
+  margin-top: 8px;
+  padding: 10px;
+  background: var(--bg);
+  border-radius: 6px;
+  font-size: 11px;
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  border: 1px solid var(--border);
+}
+
+/* Diff styling */
+.diff-line-add {
+  color: var(--green);
+}
+
+.diff-line-remove {
+  color: var(--red);
+}
+
+/* Input area */
+.input-area {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: border-color 0.15s ease;
+}
+
+.input-wrapper:focus-within {
+  border-color: var(--accent-dim);
+}
+
+.input-prompt {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.input-field {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+
+.input-field::placeholder {
+  color: var(--text-dim);
+}
+
+.input-field:disabled {
+  opacity: 0.5;
+}
+
+/* Sessions panel */
+.sessions-panel {
+  position: absolute;
+  top: 50px;
+  left: 8px;
+  width: 300px;
+  max-height: calc(100vh - 100px);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  z-index: 100;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.sessions-header {
+  padding: 12px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sessions-list {
+  overflow-y: auto;
+  max-height: 400px;
+}
+
+.session-item {
+  padding: 12px 16px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s ease;
+}
+
+.session-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.session-item.active {
+  background: var(--bg-tertiary);
+  border-left: 2px solid var(--accent);
+}
+
+.session-name {
+  font-weight: 500;
+  margin-bottom: 4px;
+  font-size: 13px;
+}
+
+.session-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.session-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+/* Loading spinner */
+.spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--yellow);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Subagent Confirmation Dialog */
+.subagent-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.subagent-confirm-dialog {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 550px;
+  max-height: 80vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  animation: slideIn 0.2s ease;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.subagent-confirm-dialog h3 {
+  padding: 16px 20px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.subagent-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.subagent-item {
+  padding: 12px 14px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+
+.subagent-item:last-child {
+  margin-bottom: 0;
+}
+
+.subagent-item-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.subagent-description {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.subagent-item-config {
+  display: flex;
+  gap: 8px;
+}
+
+.subagent-select {
+  flex: 1;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.subagent-select:hover {
+  border-color: var(--border-light);
+}
+
+.subagent-select:focus {
+  border-color: var(--accent-dim);
+}
+
+/* Role badges */
+.role-badge {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.role-badge-simple {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--green);
+}
+
+.role-badge-complex {
+  background: rgba(163, 113, 247, 0.15);
+  color: var(--purple);
+}
+
+.role-badge-researcher {
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent);
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 10px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  justify-content: flex-end;
+}
+
+.dialog-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dialog-btn.cancel {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.dialog-btn.cancel:hover {
+  background: var(--bg-tertiary);
+  color: var(--text);
+}
+
+.dialog-btn.confirm {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: var(--bg);
+}
+
+.dialog-btn.confirm:hover {
+  background: var(--accent-dim);
+  border-color: var(--accent-dim);
+}
+
+/* Inline Subagent Cards */
+.subagent-card-inline {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  animation: fadeIn 0.15s ease;
+}
+
+.subagent-card-inline.running {
+  border-left: 3px solid var(--yellow);
+}
+
+.subagent-card-inline.completed {
+  border-left: 3px solid var(--green);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.subagent-card-inline.completed:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--accent);
+}
+
+.subagent-card-inline.error {
+  border-left: 3px solid var(--red);
+}
+
+.subagent-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.subagent-card-desc {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expand-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.subagent-card-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--yellow);
+}
+
+.subagent-card-summary {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  max-height: 80px;
+  overflow: hidden;
+}
+
+/* Subagent Window (Expanded View) */
+.subagent-window-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 400;
+  animation: fadeIn 0.15s ease;
+}
+
+.subagent-window {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 800px;
+  height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  animation: slideIn 0.2s ease;
+}
+
+.subagent-window-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  border-radius: 12px 12px 0 0;
+}
+
+.subagent-window-desc {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.close-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.close-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.subagent-window-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.subagent-message {
+  max-width: 100%;
+}
+
+/* Status dot for awaiting_confirmation */
+.status-dot.awaiting_confirmation {
+  background: var(--purple);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+/* Settings Dialog */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+  animation: fadeIn 0.15s ease;
+}
+
+.settings-dialog {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  animation: slideIn 0.2s ease;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  border-radius: 12px 12px 0 0;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.settings-section h3 {
+  margin: 0 0 12px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.settings-hint {
+  margin: 0 0 16px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.settings-row label {
+  font-size: 13px;
+  color: var(--text-muted);
+  min-width: 120px;
+}
+
+.settings-row select,
+.settings-row input[type="number"] {
+  flex: 1;
+  max-width: 200px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.settings-row select:focus,
+.settings-row input[type="number"]:focus {
+  border-color: var(--accent-dim);
+}
+
+.settings-row select {
+  cursor: pointer;
+}
+
+/* Role config cards */
+.role-config {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.role-config:last-child {
+  margin-bottom: 0;
+}
+
+.role-config-header {
+  margin-bottom: 12px;
+}
+
+.role-config-fields {
+  padding-left: 8px;
+}
+
+.role-config-fields .settings-row {
+  margin-bottom: 8px;
+}
+
+.role-config-fields .settings-row:last-child {
+  margin-bottom: 0;
+}
+
+.role-config-fields .settings-row label {
+  min-width: 100px;
+  font-size: 12px;
+}
+
+.role-config-fields select,
+.role-config-fields input[type="number"] {
+  max-width: 180px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.settings-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+  border-radius: 0 0 12px 12px;
+}
+</file>
+
+<file path="src/server/providers/anthropic.ts">
+import Anthropic from '@anthropic-ai/sdk'
+import type { LLMProvider, ProviderEvent, ChatMessage, ToolDefinition, ContentBlock, ModelInfo } from './types'
+
+export class AnthropicProvider implements LLMProvider {
+  name = 'anthropic' as const
+  private client: Anthropic
+  private model: string
+
+  constructor(apiKey?: string, model?: string) {
+    this.client = new Anthropic({
+      apiKey: apiKey || process.env.ANTHROPIC_API_KEY
+    })
+    this.model = model || process.env.ANTHROPIC_MODEL || 'claude-opus-4-5-20251101'
+  }
+
+  async listModels(): Promise<ModelInfo[]> {
+    try {
+      const response = await this.client.models.list()
+      return response.data.map(m => ({
+        id: m.id,
+        name: m.display_name || m.id,
+        created: m.created_at ? new Date(m.created_at).getTime() / 1000 : undefined
+      }))
+    } catch (error) {
+      console.error('Failed to list Anthropic models:', error)
+      // Return known models as fallback (best/latest first)
+      return [
+        { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5' },
+        { id: 'claude-opus-4-20250514', name: 'Claude Opus 4' },
+        { id: 'claude-sonnet-4-5-20250514', name: 'Claude Sonnet 4.5' },
+        { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
+        { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku' },
+      ]
+    }
+  }
+
+  async *stream(
+    messages: ChatMessage[],
+    systemPrompt: string,
+    tools: ToolDefinition[]
+  ): AsyncGenerator<ProviderEvent> {
+    // Convert to Anthropic format
+    const anthropicMessages = this.convertMessages(messages)
+    const anthropicTools = this.convertTools(tools)
+
+    const stream = this.client.messages.stream({
+      model: this.model,
+      max_tokens: 8192,
+      system: systemPrompt,
+      tools: anthropicTools,
+      messages: anthropicMessages,
+    })
+
+    let currentToolId: string | null = null
+    let currentToolName: string | null = null
+    let currentToolInput = ''
+    let inputTokens = 0
+    let outputTokens = 0
+
+    for await (const event of stream) {
+      if (event.type === 'message_start') {
+        inputTokens = event.message.usage?.input_tokens || 0
+      }
+
+      if (event.type === 'message_delta') {
+        outputTokens = event.usage?.output_tokens || 0
+      }
+
+      if (event.type === 'content_block_start') {
+        if (event.content_block.type === 'tool_use') {
+          currentToolId = event.content_block.id
+          currentToolName = event.content_block.name
+          currentToolInput = ''
+          yield { type: 'tool_start', id: currentToolId, name: currentToolName }
+        }
+      }
+
+      if (event.type === 'content_block_delta') {
+        if (event.delta.type === 'text_delta') {
+          yield { type: 'text_delta', delta: event.delta.text }
+        } else if (event.delta.type === 'input_json_delta') {
+          currentToolInput += event.delta.partial_json
+          if (currentToolId) {
+            yield { type: 'tool_input_delta', id: currentToolId, partialJson: currentToolInput }
+          }
+        }
+      }
+
+      if (event.type === 'content_block_stop') {
+        if (currentToolId && currentToolName) {
+          yield {
+            type: 'tool_complete',
+            id: currentToolId,
+            name: currentToolName,
+            input: JSON.parse(currentToolInput || '{}')
+          }
+          currentToolId = null
+          currentToolName = null
+          currentToolInput = ''
+        }
+      }
+    }
+
+    yield { type: 'message_complete', usage: { inputTokens, outputTokens } }
+  }
+
+  private convertMessages(messages: ChatMessage[]): Anthropic.MessageParam[] {
+    return messages.map(msg => {
+      if (typeof msg.content === 'string') {
+        return { role: msg.role as 'user' | 'assistant', content: msg.content }
+      }
+
+      // Convert content blocks
+      const content: Anthropic.ContentBlockParam[] = msg.content.map(block => {
+        if (block.type === 'text') {
+          return { type: 'text' as const, text: block.text }
+        } else if (block.type === 'tool_use') {
+          return {
+            type: 'tool_use' as const,
+            id: block.id,
+            name: block.name,
+            input: block.input
+          }
+        } else if (block.type === 'tool_result') {
+          return {
+            type: 'tool_result' as const,
+            tool_use_id: block.tool_use_id,
+            content: block.content,
+            is_error: block.is_error
+          }
+        }
+        throw new Error(`Unknown block type: ${(block as ContentBlock).type}`)
+      })
+
+      return { role: msg.role as 'user' | 'assistant', content }
+    })
+  }
+
+  private convertTools(tools: ToolDefinition[]): Anthropic.Tool[] {
+    return tools.map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: {
+        type: 'object' as const,
+        properties: tool.parameters.properties,
+        required: tool.parameters.required
+      }
+    }))
+  }
+}
+</file>
+
+<file path="src/server/providers/index.ts">
+import { AnthropicProvider } from './anthropic'
+import { createXAIProvider, createOpenAIProvider, OpenAICompatibleProvider } from './openai-compatible'
+import type { LLMProvider, ProviderName, ProviderConfig, ToolDefinition, ModelInfo } from './types'
+export * from './types'
+
+// Provider registry
+const providers: Map<string, LLMProvider> = new Map()
+
+// Get or create a provider instance
+export function getProvider(config?: Partial<ProviderConfig>): LLMProvider {
+  const providerName = config?.provider || detectProvider()
+
+  if (!providerName) {
+    throw new Error(
+      'No LLM provider configured. Set one of: ANTHROPIC_API_KEY, XAI_API_KEY, or OPENAI_API_KEY'
+    )
+  }
+
+  // Create cache key including model
+  const model = config?.model || getDefaultModel(providerName)
+  const cacheKey = `${providerName}:${model}`
+
+  // Return cached provider if available
+  if (providers.has(cacheKey)) {
+    return providers.get(cacheKey)!
+  }
+
+  // Create new provider
+  const provider = createProvider(providerName, config?.apiKey, model)
+  providers.set(cacheKey, provider)
+  return provider
+}
+
+// Detect which provider to use based on environment
+function detectProvider(): ProviderName | null {
+  // Check for explicit preference
+  const preferred = process.env.LLM_PROVIDER?.toLowerCase() as ProviderName | undefined
+  if (preferred && isValidProvider(preferred)) {
+    return preferred
+  }
+
+  // Fall back to first available
+  if (process.env.ANTHROPIC_API_KEY) return 'anthropic'
+  if (process.env.XAI_API_KEY) return 'xai'
+  if (process.env.OPENAI_API_KEY) return 'openai'
+  return null
+}
+
+function isValidProvider(name: string): name is ProviderName {
+  return ['anthropic', 'xai', 'openai'].includes(name)
+}
+
+function getDefaultModel(provider: ProviderName): string {
+  switch (provider) {
+    case 'anthropic':
+      return process.env.ANTHROPIC_MODEL || 'claude-opus-4-5-20251101'
+    case 'xai':
+      return process.env.XAI_MODEL || 'grok-4-1-fast-reasoning'
+    case 'openai':
+      return process.env.OPENAI_MODEL || 'gpt-5.1-max-high'
+  }
+}
+
+function createProvider(name: ProviderName, apiKey?: string, model?: string): LLMProvider {
+  switch (name) {
+    case 'anthropic':
+      return new AnthropicProvider(apiKey, model)
+    case 'xai':
+      return createXAIProvider(apiKey, model)
+    case 'openai':
+      return createOpenAIProvider(apiKey, model)
+    default:
+      throw new Error(`Unknown provider: ${name}`)
+  }
+}
+
+// Export tool definitions in provider-agnostic format
+export const toolDefinitions: ToolDefinition[] = [
+  {
+    name: 'read_file',
+    description: 'Read file contents. Supports offset/limit for large files. Returns error with directory listing if file not found.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path (relative or absolute)' },
+        offset: { type: 'number', description: 'Start line (1-indexed)' },
+        limit: { type: 'number', description: 'Max lines to read (default: 2000)' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'write_file',
+    description: 'Create or overwrite a file. Creates parent directories automatically.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path (relative or absolute)' },
+        content: { type: 'string', description: 'File content' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'edit_file',
+    description: 'Replace exact text in a file. oldText must match exactly (including whitespace).',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path (relative or absolute)' },
+        oldText: { type: 'string', description: 'Text to find (exact match required)' },
+        newText: { type: 'string', description: 'Replacement text' },
+      },
+      required: ['path', 'oldText', 'newText'],
+    },
+  },
+  {
+    name: 'bash',
+    description: 'Execute a shell command. Returns stdout/stderr. Use for ls, grep, find, git, etc.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Command to run' },
+        timeout: { type: 'number', description: 'Timeout in seconds (default: 30)' },
+      },
+      required: ['command'],
+    },
+  },
+  {
+    name: 'task',
+    description: `Spawn subagent(s) to handle tasks in parallel. Use for:
+- Parallel work that doesn't depend on each other
+- Delegating research or exploration
+- Complex subtasks that need focused attention
+
+Role selection guide:
+- simple: Quick, straightforward tasks (file reads, simple edits, commands)
+- complex: Multi-step tasks requiring reasoning and iteration
+- researcher: Exploring codebases, finding patterns, gathering information
+
+Multiple tasks execute in parallel. Results are returned when all complete.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        tasks: {
+          type: 'array',
+          description: 'List of tasks to spawn as subagents',
+          items: {
+            type: 'object',
+            properties: {
+              description: {
+                type: 'string',
+                description: 'What the subagent should accomplish'
+              },
+              role: {
+                type: 'string',
+                enum: ['simple', 'complex', 'researcher'],
+                description: 'Task complexity/type for model selection'
+              },
+              context: {
+                type: 'string',
+                description: 'Optional additional context for the subagent'
+              }
+            },
+            required: ['description', 'role']
+          }
+        }
+      },
+      required: ['tasks'],
+    },
+  },
+]
+
+// Tool definitions without the task tool (for subagents to prevent nesting)
+export const subagentToolDefinitions: ToolDefinition[] = toolDefinitions.filter(t => t.name !== 'task')
+
+// List available providers based on environment
+export function listAvailableProviders(): { provider: ProviderName; defaultModel: string }[] {
+  const available: { provider: ProviderName; defaultModel: string }[] = []
+
+  if (process.env.ANTHROPIC_API_KEY) {
+    available.push({ provider: 'anthropic', defaultModel: getDefaultModel('anthropic') })
+  }
+  if (process.env.XAI_API_KEY) {
+    available.push({ provider: 'xai', defaultModel: getDefaultModel('xai') })
+  }
+  if (process.env.OPENAI_API_KEY) {
+    available.push({ provider: 'openai', defaultModel: getDefaultModel('openai') })
+  }
+
+  return available
+}
+
+// List models for a specific provider
+export async function listModelsForProvider(providerName: ProviderName): Promise<ModelInfo[]> {
+  const provider = getProvider({ provider: providerName })
+  return provider.listModels()
+}
+</file>
+
+<file path="src/server/providers/openai-compatible.ts">
+import OpenAI from 'openai'
+import type { LLMProvider, ProviderEvent, ChatMessage, ToolDefinition, ProviderName, ContentBlock, ModelInfo } from './types'
+
+// Works with xAI, OpenAI, and any OpenAI-compatible API
+export class OpenAICompatibleProvider implements LLMProvider {
+  name: ProviderName
+  private client: OpenAI
+  private model: string
+  private baseURL?: string
+
+  constructor(config: {
+    name: ProviderName
+    apiKey: string
+    baseURL?: string
+    model: string
+  }) {
+    this.name = config.name
+    this.model = config.model
+    this.baseURL = config.baseURL
+    this.client = new OpenAI({
+      apiKey: config.apiKey,
+      baseURL: config.baseURL
+    })
+  }
+
+  async listModels(): Promise<ModelInfo[]> {
+    try {
+      const response = await this.client.models.list()
+      const models: ModelInfo[] = []
+      for await (const model of response) {
+        models.push({
+          id: model.id,
+          name: model.id,
+          created: model.created
+        })
+      }
+      // Sort by created date, newest first
+      return models.sort((a, b) => (b.created || 0) - (a.created || 0))
+    } catch (error) {
+      console.error(`Failed to list ${this.name} models:`, error)
+      // Return known models as fallback based on provider
+      return this.getFallbackModels()
+    }
+  }
+
+  private getFallbackModels(): ModelInfo[] {
+    switch (this.name) {
+      case 'xai':
+        return [
+          { id: 'grok-4-1-fast-reasoning', name: 'Grok 4.1 Fast Reasoning' },
+          { id: 'grok-4-1-fast', name: 'Grok 4.1 Fast' },
+          { id: 'grok-4-0125', name: 'Grok 4' },
+          { id: 'grok-3-beta', name: 'Grok 3 Beta' },
+        ]
+      case 'openai':
+        return [
+          { id: 'gpt-5.1-max-high', name: 'GPT-5.1 Max High' },
+          { id: 'gpt-5.1', name: 'GPT-5.1' },
+          { id: 'gpt-4.1', name: 'GPT-4.1' },
+          { id: 'o3', name: 'o3' },
+        ]
+      default:
+        return [{ id: this.model, name: this.model }]
+    }
+  }
+
+  async *stream(
+    messages: ChatMessage[],
+    systemPrompt: string,
+    tools: ToolDefinition[]
+  ): AsyncGenerator<ProviderEvent> {
+    // Convert to OpenAI format
+    const openaiMessages = this.convertMessages(messages, systemPrompt)
+    const openaiTools = this.convertTools(tools)
+
+    const stream = await this.client.chat.completions.create({
+      model: this.model,
+      max_tokens: 8192,
+      messages: openaiMessages,
+      tools: openaiTools.length > 0 ? openaiTools : undefined,
+      stream: true,
+    })
+
+    // Track tool calls being built
+    const toolCalls: Map<number, { id: string; name: string; arguments: string }> = new Map()
+    let inputTokens = 0
+    let outputTokens = 0
+
+    for await (const chunk of stream) {
+      const choice = chunk.choices[0]
+      if (!choice) continue
+
+      const delta = choice.delta
+
+      // Track usage if available
+      if (chunk.usage) {
+        inputTokens = chunk.usage.prompt_tokens || 0
+        outputTokens = chunk.usage.completion_tokens || 0
+      }
+
+      // Text content
+      if (delta.content) {
+        yield { type: 'text_delta', delta: delta.content }
+      }
+
+      // Tool calls
+      if (delta.tool_calls) {
+        for (const toolCall of delta.tool_calls) {
+          const index = toolCall.index
+
+          if (!toolCalls.has(index)) {
+            // New tool call starting
+            const id = toolCall.id || `tool_${index}_${Date.now()}`
+            const name = toolCall.function?.name || ''
+            toolCalls.set(index, { id, name, arguments: '' })
+
+            if (name) {
+              yield { type: 'tool_start', id, name }
+            }
+          }
+
+          const tc = toolCalls.get(index)!
+
+          // Update name if we get it
+          if (toolCall.function?.name && !tc.name) {
+            tc.name = toolCall.function.name
+            yield { type: 'tool_start', id: tc.id, name: tc.name }
+          }
+
+          // Accumulate arguments
+          if (toolCall.function?.arguments) {
+            tc.arguments += toolCall.function.arguments
+            yield { type: 'tool_input_delta', id: tc.id, partialJson: tc.arguments }
+          }
+        }
+      }
+
+      // Check if we're done
+      if (choice.finish_reason) {
+        // Emit tool_complete for all accumulated tool calls
+        for (const [_, tc] of toolCalls) {
+          if (tc.name) {
+            try {
+              const input = JSON.parse(tc.arguments || '{}')
+              yield { type: 'tool_complete', id: tc.id, name: tc.name, input }
+            } catch {
+              yield { type: 'tool_complete', id: tc.id, name: tc.name, input: {} }
+            }
+          }
+        }
+      }
+    }
+
+    yield { type: 'message_complete', usage: { inputTokens, outputTokens } }
+  }
+
+  private convertMessages(messages: ChatMessage[], systemPrompt: string): OpenAI.ChatCompletionMessageParam[] {
+    const result: OpenAI.ChatCompletionMessageParam[] = [
+      { role: 'system', content: systemPrompt }
+    ]
+
+    for (const msg of messages) {
+      if (typeof msg.content === 'string') {
+        result.push({
+          role: msg.role === 'tool' ? 'tool' : msg.role,
+          content: msg.content
+        } as OpenAI.ChatCompletionMessageParam)
+        continue
+      }
+
+      // Handle content blocks
+      if (msg.role === 'assistant') {
+        // Check for tool calls
+        const toolUses = msg.content.filter((b): b is Extract<ContentBlock, { type: 'tool_use' }> =>
+          b.type === 'tool_use'
+        )
+        const textBlocks = msg.content.filter((b): b is Extract<ContentBlock, { type: 'text' }> =>
+          b.type === 'text'
+        )
+
+        const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam = {
+          role: 'assistant',
+          content: textBlocks.map(b => b.text).join('\n') || null
+        }
+
+        if (toolUses.length > 0) {
+          assistantMsg.tool_calls = toolUses.map(tu => ({
+            id: tu.id,
+            type: 'function' as const,
+            function: {
+              name: tu.name,
+              arguments: JSON.stringify(tu.input)
+            }
+          }))
+        }
+
+        result.push(assistantMsg)
+      } else if (msg.role === 'user') {
+        // Check for tool results
+        const toolResults = msg.content.filter((b): b is Extract<ContentBlock, { type: 'tool_result' }> =>
+          b.type === 'tool_result'
+        )
+
+        if (toolResults.length > 0) {
+          // Add each tool result as a separate message
+          for (const tr of toolResults) {
+            result.push({
+              role: 'tool',
+              tool_call_id: tr.tool_use_id,
+              content: tr.content
+            })
+          }
+        } else {
+          // Regular user message with text
+          const textBlocks = msg.content.filter((b): b is Extract<ContentBlock, { type: 'text' }> =>
+            b.type === 'text'
+          )
+          result.push({
+            role: 'user',
+            content: textBlocks.map(b => b.text).join('\n')
+          })
+        }
+      }
+    }
+
+    return result
+  }
+
+  private convertTools(tools: ToolDefinition[]): OpenAI.ChatCompletionTool[] {
+    return tools.map(tool => ({
+      type: 'function' as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: {
+          type: 'object' as const,
+          properties: tool.parameters.properties,
+          required: tool.parameters.required
+        }
+      }
+    }))
+  }
+}
+
+// Factory functions for specific providers
+export function createXAIProvider(apiKey?: string, model?: string): OpenAICompatibleProvider {
+  return new OpenAICompatibleProvider({
+    name: 'xai',
+    apiKey: apiKey || process.env.XAI_API_KEY || '',
+    baseURL: 'https://api.x.ai/v1',
+    model: model || process.env.XAI_MODEL || 'grok-4-1-fast-reasoning'
+  })
+}
+
+export function createOpenAIProvider(apiKey?: string, model?: string): OpenAICompatibleProvider {
+  return new OpenAICompatibleProvider({
+    name: 'openai',
+    apiKey: apiKey || process.env.OPENAI_API_KEY || '',
+    model: model || process.env.OPENAI_MODEL || 'gpt-5.1-max-high'
+  })
+}
+</file>
+
+<file path="src/server/providers/types.ts">
+// Unified types for multi-provider support
+
+export type ProviderName = 'anthropic' | 'xai' | 'openai'
+
+export interface ProviderConfig {
+  provider: ProviderName
+  model: string
+  apiKey?: string  // Optional - falls back to env vars
+}
+
+// Supported providers and their default models (best/latest)
+export const PROVIDER_DEFAULTS: Record<ProviderName, { model: string; envKey: string }> = {
+  anthropic: {
+    model: 'claude-opus-4-5-20251101',
+    envKey: 'ANTHROPIC_API_KEY'
+  },
+  xai: {
+    model: 'grok-4-1-fast-reasoning',
+    envKey: 'XAI_API_KEY'
+  },
+  openai: {
+    model: 'gpt-5.1-max-high',
+    envKey: 'OPENAI_API_KEY'
+  }
+}
+
+// Tool definition in a provider-agnostic format
+export interface ToolDefinition {
+  name: string
+  description: string
+  parameters: {
+    type: 'object'
+    properties: Record<string, unknown>
+    required: string[]
+  }
+}
+
+// Streaming events from providers (normalized)
+export type ProviderEvent =
+  | { type: 'text_delta'; delta: string }
+  | { type: 'tool_start'; id: string; name: string }
+  | { type: 'tool_input_delta'; id: string; partialJson: string }
+  | { type: 'tool_complete'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'message_complete'; usage: { inputTokens: number; outputTokens: number } }
+
+// Message format (provider-agnostic)
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'tool'
+  content: string | ContentBlock[]
+}
+
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
+
+// Model info returned by providers
+export interface ModelInfo {
+  id: string
+  name: string
+  contextWindow?: number
+  created?: number
+}
+
+// Provider interface - all providers must implement this
+export interface LLMProvider {
+  name: ProviderName
+
+  // Stream a completion with tool support
+  stream(
+    messages: ChatMessage[],
+    systemPrompt: string,
+    tools: ToolDefinition[]
+  ): AsyncGenerator<ProviderEvent>
+
+  // List available models from the provider API
+  listModels(): Promise<ModelInfo[]>
+}
+
+// Helper to detect which provider is available
+export function getAvailableProvider(): ProviderName | null {
+  if (process.env.ANTHROPIC_API_KEY) return 'anthropic'
+  if (process.env.XAI_API_KEY) return 'xai'
+  if (process.env.OPENAI_API_KEY) return 'openai'
+  return null
+}
+
+// Helper to get API key for a provider
+export function getApiKey(provider: ProviderName): string | undefined {
+  const envKey = PROVIDER_DEFAULTS[provider]?.envKey
+  return envKey ? process.env[envKey] : undefined
+}
+</file>
+
+<file path="src/server/agent.ts">
+import { getProvider, toolDefinitions, type ProviderConfig, type ChatMessage, type ContentBlock } from './providers'
+import { getSystemPrompt } from './prompt'
+import { executeTool } from './tools'
+import { loadConfig, needsConfirmation, type SubagentConfig } from './config'
+import { runSubagentsParallel } from './subagent'
+import type { AgentEvent, Message, SubagentTask } from './types'
+
+const MAX_ITERATIONS = 25
+const DOOM_LOOP_THRESHOLD = 3
+
+interface ToolCallTracker {
+  name: string
+  argsHash: string
+  count: number
+}
+
+function hashArgs(args: Record<string, unknown>): string {
+  return JSON.stringify(args)
+}
+
+function checkDoomLoop(
+  toolCallHistory: ToolCallTracker[],
+  name: string,
+  args: Record<string, unknown>
+): boolean {
+  const argsHash = hashArgs(args)
+  const existing = toolCallHistory.find(t => t.name === name && t.argsHash === argsHash)
+
+  if (existing) {
+    existing.count++
+    return existing.count >= DOOM_LOOP_THRESHOLD
+  }
+
+  toolCallHistory.push({ name, argsHash, count: 1 })
+  return false
+}
+
+export interface AgentConfig {
+  provider?: ProviderConfig['provider']
+  model?: string
+}
+
+// Callback for subagent confirmation flow
+export type SubagentConfirmCallback = (tasks: SubagentTask[]) => Promise<SubagentTask[] | null>
+
+export async function* agentLoop(
+  userMessage: string,
+  history: Message[],
+  workingDir: string,
+  config?: AgentConfig,
+  onSubagentConfirm?: SubagentConfirmCallback
+): AsyncGenerator<AgentEvent> {
+  const systemPrompt = await getSystemPrompt(workingDir)
+  const subagentConfig = await loadConfig(workingDir)
+  const toolCallHistory: ToolCallTracker[] = []
+
+  // Get the LLM provider
+  const provider = getProvider({
+    provider: config?.provider,
+    model: config?.model
+  })
+
+  // Build messages for API (provider-agnostic format)
+  const messages: ChatMessage[] = history.map(msg => ({
+    role: msg.role,
+    content: msg.content
+  }))
+
+  // Add user message
+  messages.push({ role: 'user', content: userMessage })
+
+  let iterations = 0
+  let totalInputTokens = 0
+  let totalOutputTokens = 0
+
+  while (iterations < MAX_ITERATIONS) {
+    iterations++
+
+    try {
+      // Track tool calls from this iteration
+      const pendingTools: Map<string, { name: string; input: Record<string, unknown> }> = new Map()
+      let hasTextContent = false
+
+      // Stream from provider
+      for await (const event of provider.stream(messages, systemPrompt, toolDefinitions)) {
+        switch (event.type) {
+          case 'text_delta':
+            hasTextContent = true
+            yield { type: 'text_delta', delta: event.delta }
+            break
+
+          case 'tool_start':
+            yield { type: 'tool_start', id: event.id, name: event.name }
+            pendingTools.set(event.id, { name: event.name, input: {} })
+            break
+
+          case 'tool_input_delta':
+            yield { type: 'tool_input_delta', id: event.id, partialJson: event.partialJson }
+            break
+
+          case 'tool_complete':
+            const tool = pendingTools.get(event.id)
+            if (tool) {
+              tool.input = event.input
+            }
+            break
+
+          case 'message_complete':
+            totalInputTokens += event.usage.inputTokens
+            totalOutputTokens += event.usage.outputTokens
+            break
+        }
+      }
+
+      // If no tools were called, we're done
+      if (pendingTools.size === 0) {
+        yield {
+          type: 'turn_complete',
+          usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens }
+        }
+        return
+      }
+
+      // Build assistant message with tool uses
+      const assistantContent: ContentBlock[] = []
+      for (const [id, tool] of pendingTools) {
+        assistantContent.push({
+          type: 'tool_use',
+          id,
+          name: tool.name,
+          input: tool.input
+        })
+      }
+      messages.push({ role: 'assistant', content: assistantContent })
+
+      // Execute tools and collect results
+      const toolResults: ContentBlock[] = []
+
+      for (const [id, tool] of pendingTools) {
+        // Check for doom loop
+        if (checkDoomLoop(toolCallHistory, tool.name, tool.input)) {
+          yield {
+            type: 'tool_result',
+            id,
+            output: '',
+            error: `Doom loop detected: ${tool.name} called ${DOOM_LOOP_THRESHOLD}+ times with identical arguments. Breaking loop.`
+          }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: `Error: Detected repeated identical calls to ${tool.name}. Please try a different approach.`,
+            is_error: true
+          })
+          continue
+        }
+
+        yield { type: 'tool_running', id }
+
+        // Special handling for the task tool (subagent spawning)
+        if (tool.name === 'task') {
+          const taskInput = tool.input as { tasks: Array<{ description: string; role: string; context?: string }> }
+
+          // Assign IDs to tasks
+          const tasks: SubagentTask[] = taskInput.tasks.map((t, i) => ({
+            id: `subagent_${Date.now()}_${i}`,
+            description: t.description,
+            role: t.role as 'simple' | 'complex' | 'researcher',
+            context: t.context
+          }))
+
+          // Check if confirmation is needed
+          let confirmedTasks = tasks
+          if (needsConfirmation(subagentConfig, tasks.length)) {
+            // Emit request event for UI
+            yield { type: 'subagent_request', tasks }
+
+            // Wait for confirmation via callback
+            if (onSubagentConfirm) {
+              const confirmed = await onSubagentConfirm(tasks)
+              if (!confirmed) {
+                yield { type: 'subagent_cancelled', taskIds: tasks.map(t => t.id) }
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: id,
+                  content: 'Subagent execution cancelled by user.',
+                  is_error: false
+                })
+                yield {
+                  type: 'tool_result',
+                  id,
+                  output: 'Subagent execution cancelled by user.'
+                }
+                continue
+              }
+              confirmedTasks = confirmed
+              yield { type: 'subagent_confirmed', tasks: confirmedTasks }
+            }
+          }
+
+          // Run subagents in parallel, passing parent's provider/model as default
+          const summaries: Map<string, string> = new Map()
+          const subagentResults: Array<{ taskId: string; summary: string; fullHistory: Message[] }> = []
+          const parentConfig = { provider: config?.provider, model: config?.model }
+
+          for await (const event of runSubagentsParallel(confirmedTasks, workingDir, subagentConfig, parentConfig)) {
+            yield event
+
+            // Collect results
+            if (event.type === 'subagent_complete') {
+              summaries.set(event.taskId, event.summary)
+              subagentResults.push({
+                taskId: event.taskId,
+                summary: event.summary,
+                fullHistory: event.fullHistory
+              })
+            } else if (event.type === 'subagent_error') {
+              summaries.set(event.taskId, `Error: ${event.error}`)
+              subagentResults.push({
+                taskId: event.taskId,
+                summary: `Error: ${event.error}`,
+                fullHistory: event.fullHistory
+              })
+            }
+          }
+
+          // Format summaries for parent agent (lean context - only summaries, not full history)
+          const output = confirmedTasks.map((task, i) =>
+            `## Task ${i + 1}: ${task.description}\n\n${summaries.get(task.id) || '(no result)'}`
+          ).join('\n\n---\n\n')
+
+          yield {
+            type: 'tool_result',
+            id,
+            output,
+            details: {
+              type: 'subagent',
+              data: { tasks: confirmedTasks, results: subagentResults }
+            }
+          }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: output
+          })
+          continue
+        }
+
+        // Normal tool execution
+        try {
+          const result = await executeTool(tool.name, tool.input, workingDir)
+          yield {
+            type: 'tool_result',
+            id,
+            output: result.output,
+            details: result.details
+          }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: result.output
+          })
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+          yield {
+            type: 'tool_result',
+            id,
+            output: '',
+            error: errorMsg
+          }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: `Error: ${errorMsg}`,
+            is_error: true
+          })
+        }
+      }
+
+      // Add tool results as user message
+      messages.push({ role: 'user', content: toolResults })
+
+    } catch (error) {
+      // Handle rate limits with exponential backoff
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      if (errorMessage.toLowerCase().includes('rate limit')) {
+        const waitTime = Math.min(60, Math.pow(2, iterations) * 2)
+        yield { type: 'retry_countdown', seconds: waitTime, reason: 'Rate limit exceeded' }
+        await new Promise(resolve => setTimeout(resolve, waitTime * 1000))
+        iterations-- // Don't count rate limit retries
+        continue
+      }
+      throw error
+    }
+  }
+
+  yield { type: 'error', error: `Max iterations (${MAX_ITERATIONS}) reached` }
+}
+</file>
+
+<file path="src/server/config.ts">
+import { readFile, writeFile, mkdir } from 'fs/promises'
+import { join, dirname } from 'path'
+import { exists } from './tools'
+import type { ProviderName } from './providers/types'
+
+// Main chat configuration
+export interface MainChatConfig {
+  provider: ProviderName
+  model: string
+}
+
+// Subagent role types
+export type SubagentRole = 'simple' | 'complex' | 'researcher'
+
+// Role-specific configuration
+export interface RoleConfig {
+  provider: ProviderName
+  model: string
+  maxIterations: number
+}
+
+// Subagent configuration
+export interface SubagentConfig {
+  // When to confirm with user: always, never, or only when multiple agents
+  confirmMode: 'always' | 'never' | 'multiple'
+
+  // Default timeout per subagent (seconds)
+  timeout: number
+
+  // Max concurrent subagents
+  maxConcurrent: number
+
+  // Role-specific defaults
+  roles: Record<SubagentRole, RoleConfig>
+}
+
+// Full agent configuration (main chat + subagents)
+export interface AgentConfig {
+  // Main chat defaults
+  mainChat?: MainChatConfig
+
+  // Subagent settings
+  subagents: SubagentConfig
+}
+
+// Default subagent configuration
+export const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
+  confirmMode: 'always',
+  timeout: 120,
+  maxConcurrent: 5,
+  roles: {
+    simple: {
+      provider: 'anthropic',
+      model: 'claude-3-5-haiku-20241022',
+      maxIterations: 10
+    },
+    complex: {
+      provider: 'anthropic',
+      model: 'claude-opus-4-5-20251101',
+      maxIterations: 25
+    },
+    researcher: {
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5-20250514',
+      maxIterations: 15
+    }
+  }
+}
+
+// Default full configuration
+export const DEFAULT_CONFIG: AgentConfig = {
+  mainChat: undefined, // Will use first available provider
+  subagents: DEFAULT_SUBAGENT_CONFIG
+}
+
+// Config file path relative to working directory
+const CONFIG_PATH = '.agent/config.json'
+
+/**
+ * Load full configuration from the working directory
+ * Falls back to defaults if not present
+ */
+export async function loadFullConfig(workingDir: string): Promise<AgentConfig> {
+  const configPath = join(workingDir, CONFIG_PATH)
+
+  try {
+    if (await exists(configPath)) {
+      const content = await readFile(configPath, 'utf-8')
+      const loaded = JSON.parse(content)
+
+      // Handle legacy format (flat subagent config) or new format
+      if (loaded.subagents) {
+        // New format with mainChat and subagents
+        return mergeFullConfig(DEFAULT_CONFIG, loaded)
+      } else if (loaded.roles) {
+        // Legacy format - just subagent config at root
+        return {
+          mainChat: undefined,
+          subagents: mergeSubagentConfig(DEFAULT_SUBAGENT_CONFIG, loaded)
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(`Failed to load config from ${configPath}:`, error)
+  }
+
+  return { ...DEFAULT_CONFIG, subagents: { ...DEFAULT_SUBAGENT_CONFIG } }
+}
+
+/**
+ * Load just subagent configuration (for backward compatibility)
+ */
+export async function loadConfig(workingDir: string): Promise<SubagentConfig> {
+  const full = await loadFullConfig(workingDir)
+  return full.subagents
+}
+
+/**
+ * Save full configuration to the working directory
+ */
+export async function saveFullConfig(workingDir: string, config: AgentConfig): Promise<void> {
+  const configPath = join(workingDir, CONFIG_PATH)
+
+  // Ensure directory exists
+  await mkdir(dirname(configPath), { recursive: true })
+
+  await writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8')
+}
+
+/**
+ * Save just subagent configuration (for backward compatibility)
+ */
+export async function saveConfig(workingDir: string, config: SubagentConfig): Promise<void> {
+  const existing = await loadFullConfig(workingDir)
+  existing.subagents = config
+  await saveFullConfig(workingDir, existing)
+}
+
+/**
+ * Deep merge full configuration with defaults
+ */
+function mergeFullConfig(defaults: AgentConfig, loaded: Partial<AgentConfig>): AgentConfig {
+  return {
+    mainChat: loaded.mainChat ?? defaults.mainChat,
+    subagents: mergeSubagentConfig(defaults.subagents, loaded.subagents || {})
+  }
+}
+
+/**
+ * Deep merge subagent configuration with defaults
+ */
+function mergeSubagentConfig(defaults: SubagentConfig, loaded: Partial<SubagentConfig>): SubagentConfig {
+  return {
+    confirmMode: loaded.confirmMode ?? defaults.confirmMode,
+    timeout: loaded.timeout ?? defaults.timeout,
+    maxConcurrent: loaded.maxConcurrent ?? defaults.maxConcurrent,
+    roles: {
+      simple: { ...defaults.roles.simple, ...loaded.roles?.simple },
+      complex: { ...defaults.roles.complex, ...loaded.roles?.complex },
+      researcher: { ...defaults.roles.researcher, ...loaded.roles?.researcher }
+    }
+  }
+}
+
+/**
+ * Get configuration for a specific role
+ */
+export function getRoleConfig(config: SubagentConfig, role: SubagentRole): RoleConfig {
+  return config.roles[role]
+}
+
+/**
+ * Check if confirmation is needed based on config and task count
+ */
+export function needsConfirmation(config: SubagentConfig, taskCount: number): boolean {
+  switch (config.confirmMode) {
+    case 'always':
+      return true
+    case 'never':
+      return false
+    case 'multiple':
+      return taskCount > 1
+  }
+}
+</file>
+
+<file path="src/server/index.ts">
+import { serve } from '@hono/node-server'
+import { Hono } from 'hono'
+import { cors } from 'hono/cors'
+import { streamSSE } from 'hono/streaming'
+import { agentLoop, type AgentConfig } from './agent'
+import { createSession, saveSession, loadSession, listSessions, deleteSession, updateSessionMessage } from './sessions'
+import { listAvailableProviders, listModelsForProvider, type ProviderName } from './providers'
+import { loadFullConfig, saveFullConfig, DEFAULT_CONFIG, type AgentConfig as FullAgentConfig, type SubagentConfig } from './config'
+import type { Message, SubagentTask } from './types'
+import type { Session } from './sessions'
+
+// Store pending subagent confirmations by request ID
+const pendingConfirmations: Map<string, {
+  resolve: (tasks: SubagentTask[] | null) => void
+  tasks: SubagentTask[]
+}> = new Map()
+
+const app = new Hono()
+
+// Enable CORS for the frontend
+app.use('*', cors())
+
+// Health check
+app.get('/api/health', (c) => c.json({ status: 'ok' }))
+
+// List available providers
+app.get('/api/providers', (c) => {
+  const providers = listAvailableProviders()
+  return c.json({ providers })
+})
+
+// List models for a specific provider
+app.get('/api/providers/:provider/models', async (c) => {
+  const providerName = c.req.param('provider') as ProviderName
+  const validProviders = ['anthropic', 'xai', 'openai']
+
+  if (!validProviders.includes(providerName)) {
+    return c.json({ error: 'Invalid provider' }, 400)
+  }
+
+  try {
+    const models = await listModelsForProvider(providerName)
+    return c.json({ models })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to list models'
+    }, 500)
+  }
+})
+
+// Configuration endpoints - full config (mainChat + subagents)
+app.get('/api/config', async (c) => {
+  const workingDir = c.req.query('workingDir') || process.cwd()
+  try {
+    const config = await loadFullConfig(workingDir)
+    return c.json({ config })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to load config'
+    }, 500)
+  }
+})
+
+app.put('/api/config', async (c) => {
+  const body = await c.req.json()
+  const workingDir: string = body.workingDir || process.cwd()
+  const config: Partial<FullAgentConfig> = body.config
+
+  if (!config) {
+    return c.json({ error: 'Missing config in request body' }, 400)
+  }
+
+  try {
+    // Load existing config and merge with updates
+    const existing = await loadFullConfig(workingDir)
+    const merged: FullAgentConfig = {
+      mainChat: config.mainChat !== undefined ? config.mainChat : existing.mainChat,
+      subagents: config.subagents ? {
+        ...existing.subagents,
+        ...config.subagents,
+        roles: {
+          ...existing.subagents.roles,
+          ...config.subagents.roles
+        }
+      } : existing.subagents
+    }
+    await saveFullConfig(workingDir, merged)
+    return c.json({ config: merged })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to save config'
+    }, 500)
+  }
+})
+
+app.get('/api/config/defaults', (c) => {
+  return c.json({ config: DEFAULT_CONFIG })
+})
+
+// Subagent confirmation endpoints
+app.post('/api/subagents/confirm', async (c) => {
+  const body = await c.req.json()
+  const requestId: string = body.requestId
+  const confirmed: boolean = body.confirmed
+  const tasks: SubagentTask[] | undefined = body.tasks
+
+  const pending = pendingConfirmations.get(requestId)
+  if (!pending) {
+    return c.json({ error: 'No pending confirmation found' }, 404)
+  }
+
+  if (confirmed && tasks) {
+    pending.resolve(tasks)
+  } else {
+    pending.resolve(null)
+  }
+
+  pendingConfirmations.delete(requestId)
+  return c.json({ success: true })
+})
+
+// Session management endpoints
+app.get('/api/sessions', async (c) => {
+  const workingDir = c.req.query('workingDir') || process.cwd()
+  const sessions = await listSessions(workingDir)
+  return c.json({ sessions })
+})
+
+app.post('/api/sessions', async (c) => {
+  const body = await c.req.json()
+  const workingDir: string = body.workingDir || process.cwd()
+  const session = await createSession(workingDir)
+  return c.json({ session })
+})
+
+app.get('/api/sessions/:id', async (c) => {
+  const sessionId = c.req.param('id')
+  const workingDir = c.req.query('workingDir') || process.cwd()
+  const session = await loadSession(workingDir, sessionId)
+
+  if (!session) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  return c.json({ session })
+})
+
+app.put('/api/sessions/:id', async (c) => {
+  const sessionId = c.req.param('id')
+  const body = await c.req.json()
+  const workingDir: string = body.workingDir || process.cwd()
+
+  const session = await loadSession(workingDir, sessionId)
+  if (!session) {
+    return c.json({ error: 'Session not found' }, 404)
+  }
+
+  // Update session fields
+  if (body.name !== undefined) session.name = body.name
+  if (body.messages !== undefined) session.messages = body.messages
+  if (body.metadata !== undefined) session.metadata = { ...session.metadata, ...body.metadata }
+
+  await saveSession(session)
+  return c.json({ session })
+})
+
+app.delete('/api/sessions/:id', async (c) => {
+  const sessionId = c.req.param('id')
+  const workingDir = c.req.query('workingDir') || process.cwd()
+
+  const deleted = await deleteSession(workingDir, sessionId)
+  if (!deleted) {
+    return c.json({ error: 'Session not found or could not be deleted' }, 404)
+  }
+
+  return c.json({ success: true })
+})
+
+// SSE endpoint for agent interactions
+app.post('/api/chat', async (c) => {
+  const body = await c.req.json()
+  const userMessage: string = body.message
+  const history: Message[] = body.history || []
+  const workingDir: string = body.workingDir || process.cwd()
+  const sessionId: string | undefined = body.sessionId
+
+  // Provider configuration from request
+  const agentConfig: AgentConfig = {
+    provider: body.provider,
+    model: body.model
+  }
+
+  // Load or create session
+  let session: Session | null = null
+  if (sessionId) {
+    session = await loadSession(workingDir, sessionId)
+  }
+
+  return streamSSE(c, async (stream) => {
+    try {
+      let assistantContent = ''
+      let toolCalls: Message['toolCalls'] = []
+      let tokenUsage = { input: 0, output: 0 }
+
+      // Subagent confirmation callback
+      const onSubagentConfirm = async (tasks: SubagentTask[]): Promise<SubagentTask[] | null> => {
+        const requestId = `confirm_${Date.now()}_${Math.random().toString(36).slice(2)}`
+
+        // Send the request ID to the client so it knows which confirmation to respond to
+        await stream.writeSSE({
+          event: 'subagent_request',
+          data: JSON.stringify({ type: 'subagent_request', tasks, requestId })
+        })
+
+        // Wait for confirmation from client
+        return new Promise((resolve) => {
+          pendingConfirmations.set(requestId, { resolve, tasks })
+
+          // Timeout after 5 minutes
+          setTimeout(() => {
+            if (pendingConfirmations.has(requestId)) {
+              pendingConfirmations.delete(requestId)
+              resolve(null)
+            }
+          }, 5 * 60 * 1000)
+        })
+      }
+
+      for await (const event of agentLoop(userMessage, history, workingDir, agentConfig, onSubagentConfirm)) {
+        // Skip subagent_request since we handle it specially in onSubagentConfirm
+        if (event.type === 'subagent_request') continue
+
+        await stream.writeSSE({
+          event: event.type,
+          data: JSON.stringify(event),
+        })
+
+        // Track content for session persistence
+        if (event.type === 'text_delta') {
+          assistantContent += event.delta
+        } else if (event.type === 'tool_start') {
+          toolCalls.push({
+            id: event.id,
+            name: event.name,
+            input: {},
+            status: 'pending'
+          })
+        } else if (event.type === 'tool_result') {
+          const tool = toolCalls.find(t => t.id === event.id)
+          if (tool) {
+            tool.output = event.output
+            tool.status = event.error ? 'error' : 'done'
+            tool.error = event.error
+          }
+        } else if (event.type === 'turn_complete' && event.usage) {
+          tokenUsage = { input: event.usage.inputTokens, output: event.usage.outputTokens }
+        }
+      }
+
+      // Save to session if we have one
+      if (session) {
+        // Add user message
+        updateSessionMessage(session, { role: 'user', content: userMessage })
+
+        // Add assistant message
+        if (assistantContent || toolCalls.length > 0) {
+          updateSessionMessage(
+            session,
+            {
+              role: 'assistant',
+              content: assistantContent,
+              toolCalls: toolCalls.length > 0 ? toolCalls : undefined
+            },
+            tokenUsage
+          )
+        }
+
+        await saveSession(session)
+
+        // Send session update event
+        await stream.writeSSE({
+          event: 'session_updated',
+          data: JSON.stringify({ sessionId: session.id })
+        })
+      }
+    } catch (error) {
+      await stream.writeSSE({
+        event: 'error',
+        data: JSON.stringify({
+          type: 'error',
+          error: error instanceof Error ? error.message : 'Unknown error'
+        }),
+      })
+    }
+  })
+})
+
+const port = parseInt(process.env.PORT || '3001')
+console.log(`Agent server running on http://localhost:${port}`)
+
+serve({
+  fetch: app.fetch,
+  port,
+})
+
+export default app
+</file>
+
+<file path="src/server/prompt.ts">
+import { readFile } from 'fs/promises'
+import { join } from 'path'
+import { exists } from './tools'
+
+// Minimal system prompt (~100-150 tokens) - pi-style
+export const SYSTEM_PROMPT = `You are a coding assistant. Help with coding tasks by reading files, executing commands, editing code, and writing files.
+
+Tools: read_file, write_file, edit_file, bash, task
+
+Guidelines:
+- Read files before editing
+- Use edit_file for precise changes (oldText must match exactly)
+- Use bash for ls, grep, find, git
+- Use task to spawn parallel subagents for independent work:
+  - 'simple' role: quick file ops, simple queries
+  - 'complex' role: multi-step implementations
+  - 'researcher' role: exploring code, finding patterns
+- Be concise`
+
+// Subagent-specific system prompt (no task tool, requires summary)
+export const SUBAGENT_SYSTEM_PROMPT = `You are a focused coding assistant working on a specific task.
+
+Tools: read_file, write_file, edit_file, bash
+
+Guidelines:
+- Read files before editing
+- Use edit_file for precise changes (oldText must match exactly)
+- Use bash for ls, grep, find, git
+- Be concise and focused on your assigned task
+
+IMPORTANT: When you complete your task, output a brief summary (2-4 sentences) of what you accomplished or found. This summary will be returned to the orchestrating agent.`
+
+// Instruction files to look for
+const INSTRUCTION_FILES = ['CLAUDE.md', 'AGENTS.md', '.claude/CLAUDE.md', '.agent/AGENTS.md']
+
+export async function loadProjectInstructions(workDir: string): Promise<string | null> {
+  for (const file of INSTRUCTION_FILES) {
+    const path = join(workDir, file)
+    if (await exists(path)) {
+      try {
+        return await readFile(path, 'utf-8')
+      } catch {
+        // File exists but can't be read
+        continue
+      }
+    }
+  }
+  return null
+}
+
+export async function getSystemPrompt(workDir: string): Promise<string> {
+  const projectInstructions = await loadProjectInstructions(workDir)
+
+  if (projectInstructions) {
+    return `${SYSTEM_PROMPT}
+
+<project_instructions>
+${projectInstructions}
+</project_instructions>`
+  }
+
+  return SYSTEM_PROMPT
+}
+</file>
+
+<file path="src/server/sessions.ts">
+import { readFile, writeFile, mkdir, readdir, stat } from 'fs/promises'
+import { join, dirname } from 'path'
+import type { Message, ToolCall } from './types'
+
+// Session data model
+export interface Session {
+  id: string
+  name?: string
+  workingDir: string
+  messages: Message[]
+  createdAt: string
+  updatedAt: string
+  metadata: {
+    totalTokens: { input: number; output: number }
+    toolCalls: number
+  }
+}
+
+// Default sessions directory
+const SESSIONS_DIR = '.agent/sessions'
+
+function getSessionsDir(workingDir: string): string {
+  return join(workingDir, SESSIONS_DIR)
+}
+
+function generateSessionId(): string {
+  const now = new Date()
+  const date = now.toISOString().slice(0, 10).replace(/-/g, '')
+  const time = now.toISOString().slice(11, 19).replace(/:/g, '')
+  const random = Math.random().toString(36).slice(2, 6)
+  return `${date}-${time}-${random}`
+}
+
+export async function createSession(workingDir: string): Promise<Session> {
+  const session: Session = {
+    id: generateSessionId(),
+    workingDir,
+    messages: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    metadata: {
+      totalTokens: { input: 0, output: 0 },
+      toolCalls: 0
+    }
+  }
+  return session
+}
+
+export async function saveSession(session: Session): Promise<void> {
+  const sessionsDir = getSessionsDir(session.workingDir)
+  await mkdir(sessionsDir, { recursive: true })
+
+  const filePath = join(sessionsDir, `${session.id}.json`)
+  session.updatedAt = new Date().toISOString()
+
+  await writeFile(filePath, JSON.stringify(session, null, 2), 'utf-8')
+}
+
+export async function loadSession(workingDir: string, sessionId: string): Promise<Session | null> {
+  const filePath = join(getSessionsDir(workingDir), `${sessionId}.json`)
+
+  try {
+    const content = await readFile(filePath, 'utf-8')
+    return JSON.parse(content) as Session
+  } catch {
+    return null
+  }
+}
+
+export async function listSessions(workingDir: string): Promise<{ id: string; name?: string; updatedAt: string; messageCount: number }[]> {
+  const sessionsDir = getSessionsDir(workingDir)
+
+  try {
+    const files = await readdir(sessionsDir)
+    const sessions: { id: string; name?: string; updatedAt: string; messageCount: number }[] = []
+
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue
+
+      try {
+        const content = await readFile(join(sessionsDir, file), 'utf-8')
+        const session = JSON.parse(content) as Session
+        sessions.push({
+          id: session.id,
+          name: session.name,
+          updatedAt: session.updatedAt,
+          messageCount: session.messages.length
+        })
+      } catch {
+        // Skip invalid session files
+      }
+    }
+
+    // Sort by updatedAt descending
+    sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    return sessions
+  } catch {
+    return []
+  }
+}
+
+export async function deleteSession(workingDir: string, sessionId: string): Promise<boolean> {
+  const filePath = join(getSessionsDir(workingDir), `${sessionId}.json`)
+
+  try {
+    const { unlink } = await import('fs/promises')
+    await unlink(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Update session with new message and token usage
+export function updateSessionMessage(
+  session: Session,
+  message: Message,
+  tokens?: { input: number; output: number }
+): void {
+  session.messages.push(message)
+
+  if (tokens) {
+    session.metadata.totalTokens.input += tokens.input
+    session.metadata.totalTokens.output += tokens.output
+  }
+
+  // Count tool calls
+  if (message.toolCalls) {
+    session.metadata.toolCalls += message.toolCalls.length
+  }
+}
+</file>
+
+<file path="src/server/subagent.ts">
+import { getProvider, subagentToolDefinitions, type ChatMessage, type ContentBlock } from './providers'
+import { SUBAGENT_SYSTEM_PROMPT, loadProjectInstructions } from './prompt'
+import { executeTool } from './tools'
+import type { SubagentConfig, SubagentRole } from './config'
+import type { AgentEvent, Message, SubagentTask, ToolCall } from './types'
+
+const DOOM_LOOP_THRESHOLD = 3
+
+interface ToolCallTracker {
+  name: string
+  argsHash: string
+  count: number
+}
+
+function hashArgs(args: Record<string, unknown>): string {
+  return JSON.stringify(args)
+}
+
+function checkDoomLoop(
+  toolCallHistory: ToolCallTracker[],
+  name: string,
+  args: Record<string, unknown>
+): boolean {
+  const argsHash = hashArgs(args)
+  const existing = toolCallHistory.find(t => t.name === name && t.argsHash === argsHash)
+
+  if (existing) {
+    existing.count++
+    return existing.count >= DOOM_LOOP_THRESHOLD
+  }
+
+  toolCallHistory.push({ name, argsHash, count: 1 })
+  return false
+}
+
+export interface ParentConfig {
+  provider?: string
+  model?: string
+}
+
+export interface SubagentOptions {
+  task: SubagentTask
+  workingDir: string
+  config: SubagentConfig
+  parentConfig?: ParentConfig  // Inherit provider/model from parent if not specified
+  // NO parent history - subagents get fresh context only
+}
+
+/**
+ * Build the prompt for a subagent based on its task and role
+ */
+function buildSubagentPrompt(task: SubagentTask): string {
+  const rolePrompts: Record<SubagentRole, string> = {
+    simple: 'Complete this task efficiently.',
+    complex: 'Carefully work through this task step by step. Think before acting.',
+    researcher: 'Explore and gather information thoroughly.'
+  }
+
+  return `${rolePrompts[task.role]}
+
+Task: ${task.description}
+${task.context ? `\nContext: ${task.context}` : ''}`
+}
+
+/**
+ * Run a single subagent to completion
+ * Yields progress events and returns the final result
+ */
+export async function* runSubagent(
+  options: SubagentOptions
+): AsyncGenerator<AgentEvent> {
+  const { task, workingDir, config, parentConfig } = options
+
+  // Get role config (with user overrides)
+  // Priority: task override > parent config > role config
+  const roleConfig = config.roles[task.role]
+  const providerName = task.provider || parentConfig?.provider || roleConfig.provider
+  const model = task.model || parentConfig?.model || roleConfig.model
+  const maxIterations = roleConfig.maxIterations
+
+  // Build subagent prompt
+  const userPrompt = buildSubagentPrompt(task)
+
+  // Get system prompt with project instructions
+  const projectInstructions = await loadProjectInstructions(workingDir)
+  const systemPrompt = projectInstructions
+    ? `${SUBAGENT_SYSTEM_PROMPT}\n\n<project_instructions>\n${projectInstructions}\n</project_instructions>`
+    : SUBAGENT_SYSTEM_PROMPT
+
+  yield { type: 'subagent_start', taskId: task.id, description: task.description, role: task.role }
+
+  // Get the LLM provider
+  const provider = getProvider({
+    provider: providerName,
+    model: model
+  })
+
+  // Build messages - start fresh (no parent history)
+  const messages: ChatMessage[] = [{ role: 'user', content: userPrompt }]
+
+  // Track history for UI expandable view
+  const history: Message[] = [{ role: 'user', content: userPrompt }]
+
+  const toolCallHistory: ToolCallTracker[] = []
+  let iterations = 0
+  let finalOutput = ''
+
+  try {
+    while (iterations < maxIterations) {
+      iterations++
+
+      // Track tool calls from this iteration
+      const pendingTools: Map<string, { name: string; input: Record<string, unknown> }> = new Map()
+      let textContent = ''
+
+      // Stream from provider - use subagent tool definitions (no task tool)
+      for await (const event of provider.stream(messages, systemPrompt, subagentToolDefinitions)) {
+        switch (event.type) {
+          case 'text_delta':
+            textContent += event.delta
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'text_delta', delta: event.delta } }
+            break
+
+          case 'tool_start':
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_start', id: event.id, name: event.name } }
+            pendingTools.set(event.id, { name: event.name, input: {} })
+            break
+
+          case 'tool_input_delta':
+            yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_input_delta', id: event.id, partialJson: event.partialJson } }
+            break
+
+          case 'tool_complete':
+            const tool = pendingTools.get(event.id)
+            if (tool) {
+              tool.input = event.input
+            }
+            break
+        }
+      }
+
+      // Track assistant message in history
+      if (textContent || pendingTools.size > 0) {
+        const toolCalls: ToolCall[] = []
+        for (const [id, tool] of pendingTools) {
+          toolCalls.push({
+            id,
+            name: tool.name,
+            input: tool.input,
+            status: 'pending'
+          })
+        }
+        history.push({
+          role: 'assistant',
+          content: textContent,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined
+        })
+      }
+
+      // If no tools were called, we're done
+      if (pendingTools.size === 0) {
+        finalOutput = textContent
+        break
+      }
+
+      // Build assistant message with tool uses
+      const assistantContent: ContentBlock[] = []
+      if (textContent) {
+        assistantContent.push({ type: 'text', text: textContent })
+      }
+      for (const [id, tool] of pendingTools) {
+        assistantContent.push({
+          type: 'tool_use',
+          id,
+          name: tool.name,
+          input: tool.input
+        })
+      }
+      messages.push({ role: 'assistant', content: assistantContent })
+
+      // Execute tools and collect results
+      const toolResults: ContentBlock[] = []
+
+      for (const [id, tool] of pendingTools) {
+        // Check for doom loop
+        if (checkDoomLoop(toolCallHistory, tool.name, tool.input)) {
+          const errorEvent: AgentEvent = {
+            type: 'tool_result',
+            id,
+            output: '',
+            error: `Doom loop detected: ${tool.name} called ${DOOM_LOOP_THRESHOLD}+ times with identical arguments.`
+          }
+          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: `Error: Detected repeated identical calls to ${tool.name}. Please try a different approach.`,
+            is_error: true
+          })
+
+          // Update history
+          const historyTool = history[history.length - 1]?.toolCalls?.find(t => t.id === id)
+          if (historyTool) {
+            historyTool.status = 'error'
+            historyTool.error = 'Doom loop detected'
+          }
+          continue
+        }
+
+        yield { type: 'subagent_progress', taskId: task.id, event: { type: 'tool_running', id } }
+
+        try {
+          const result = await executeTool(tool.name, tool.input, workingDir)
+          const resultEvent: AgentEvent = {
+            type: 'tool_result',
+            id,
+            output: result.output,
+            details: result.details
+          }
+          yield { type: 'subagent_progress', taskId: task.id, event: resultEvent }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: result.output
+          })
+
+          // Update history
+          const historyTool = history[history.length - 1]?.toolCalls?.find(t => t.id === id)
+          if (historyTool) {
+            historyTool.status = 'done'
+            historyTool.output = result.output
+            historyTool.details = result.details
+          }
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+          const errorEvent: AgentEvent = {
+            type: 'tool_result',
+            id,
+            output: '',
+            error: errorMsg
+          }
+          yield { type: 'subagent_progress', taskId: task.id, event: errorEvent }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: `Error: ${errorMsg}`,
+            is_error: true
+          })
+
+          // Update history
+          const historyTool = history[history.length - 1]?.toolCalls?.find(t => t.id === id)
+          if (historyTool) {
+            historyTool.status = 'error'
+            historyTool.error = errorMsg
+          }
+        }
+      }
+
+      // Add tool results as user message
+      messages.push({ role: 'user', content: toolResults })
+    }
+
+    // If we hit max iterations without finishing, note it
+    if (iterations >= maxIterations && !finalOutput) {
+      finalOutput = `(Subagent reached max iterations: ${maxIterations})`
+    }
+
+    yield {
+      type: 'subagent_complete',
+      taskId: task.id,
+      summary: finalOutput,
+      fullHistory: history
+    }
+  } catch (error) {
+    yield {
+      type: 'subagent_error',
+      taskId: task.id,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      fullHistory: history
+    }
+  }
+}
+
+/**
+ * Run multiple subagents in parallel
+ * Merges their event streams and collects results
+ */
+export async function* runSubagentsParallel(
+  tasks: SubagentTask[],
+  workingDir: string,
+  config: SubagentConfig,
+  parentConfig?: ParentConfig
+): AsyncGenerator<AgentEvent> {
+  const results: Map<string, { summary: string; fullHistory: Message[] }> = new Map()
+  const errors: Map<string, { error: string; fullHistory: Message[] }> = new Map()
+
+  // Create generators for each subagent
+  const generators = tasks.map(task => ({
+    taskId: task.id,
+    gen: runSubagent({ task, workingDir, config, parentConfig })
+  }))
+
+  // Process all generators concurrently
+  // We'll use a simple round-robin approach to yield events
+  const pending = new Set(generators.map(g => g.taskId))
+
+  while (pending.size > 0) {
+    // Process one event from each active generator
+    const iterPromises = generators
+      .filter(g => pending.has(g.taskId))
+      .map(async ({ taskId, gen }) => {
+        const result = await gen.next()
+        return { taskId, result }
+      })
+
+    // Wait for all current iterations
+    const iterations = await Promise.all(iterPromises)
+
+    for (const { taskId, result } of iterations) {
+      if (result.done) {
+        pending.delete(taskId)
+        continue
+      }
+
+      const event = result.value
+      yield event
+
+      // Track completion/error for final aggregation
+      if (event.type === 'subagent_complete') {
+        results.set(event.taskId, {
+          summary: event.summary,
+          fullHistory: event.fullHistory
+        })
+      } else if (event.type === 'subagent_error') {
+        errors.set(event.taskId, {
+          error: event.error,
+          fullHistory: event.fullHistory
+        })
+      }
+    }
+  }
+}
+</file>
+
+<file path="src/server/tools.ts">
+import { spawn } from 'child_process'
+import { readFile, writeFile, mkdir, stat, readdir } from 'fs/promises'
+import { dirname, join, isAbsolute } from 'path'
+import type { ToolResult } from './types'
+
+// Tool definitions are now in providers/index.ts for provider-agnostic format
+
+// Helper to check if file exists
+export async function exists(path: string): Promise<boolean> {
+  try {
+    await stat(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Helper to resolve path
+function resolvePath(path: string, workingDir: string): string {
+  return isAbsolute(path) ? path : join(workingDir, path)
+}
+
+// Helper to detect binary files
+async function isBinaryFile(path: string): Promise<boolean> {
+  try {
+    const buffer = Buffer.alloc(512)
+    const fd = await import('fs').then(fs =>
+      new Promise<number>((resolve, reject) =>
+        fs.open(path, 'r', (err, fd) => err ? reject(err) : resolve(fd))
+      )
+    )
+    const fs = await import('fs')
+    const bytesRead = await new Promise<number>((resolve, reject) =>
+      fs.read(fd, buffer, 0, 512, 0, (err, bytesRead) => {
+        fs.close(fd, () => {})
+        err ? reject(err) : resolve(bytesRead)
+      })
+    )
+
+    // Check for null bytes (common in binary files)
+    for (let i = 0; i < bytesRead; i++) {
+      if (buffer[i] === 0) return true
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
+// Tool implementations
+async function readFileTool(
+  input: { path: string; offset?: number; limit?: number },
+  workingDir: string
+): Promise<ToolResult> {
+  const filePath = resolvePath(input.path, workingDir)
+  const limit = input.limit || 2000
+  const offset = (input.offset || 1) - 1 // Convert to 0-indexed
+
+  try {
+    // Check if path exists
+    const pathStat = await stat(filePath)
+
+    if (pathStat.isDirectory()) {
+      const entries = await readdir(filePath)
+      return {
+        output: `Error: ${input.path} is a directory. Contents: ${entries.slice(0, 20).join(', ')}${entries.length > 20 ? '...' : ''}`,
+        details: { type: 'error', data: { isDirectory: true, entries } }
+      }
+    }
+
+    // Check for binary
+    if (await isBinaryFile(filePath)) {
+      return {
+        output: `Error: ${input.path} appears to be a binary file`,
+        details: { type: 'error', data: { isBinary: true } }
+      }
+    }
+
+    const content = await readFile(filePath, 'utf-8')
+    const lines = content.split('\n')
+    const selectedLines = lines.slice(offset, offset + limit)
+    const totalLines = lines.length
+
+    const numberedContent = selectedLines
+      .map((line, i) => `${offset + i + 1}: ${line}`)
+      .join('\n')
+
+    const truncated = totalLines > offset + limit
+
+    return {
+      output: truncated
+        ? `${numberedContent}\n\n[Truncated: showing lines ${offset + 1}-${offset + selectedLines.length} of ${totalLines}]`
+        : numberedContent,
+      details: {
+        type: 'file',
+        data: {
+          path: input.path,
+          content: selectedLines.join('\n'),
+          startLine: offset + 1,
+          endLine: offset + selectedLines.length,
+          totalLines,
+          truncated
+        }
+      }
+    }
+  } catch (error) {
+    // File not found - try to help by listing directory
+    const dir = dirname(filePath)
+    try {
+      const entries = await readdir(dir)
+      return {
+        output: `Error: File not found at ${input.path}. Directory "${dirname(input.path)}" contains: ${entries.slice(0, 15).join(', ')}${entries.length > 15 ? '...' : ''}`,
+        details: { type: 'error', data: { notFound: true, dirContents: entries } }
+      }
+    } catch {
+      return {
+        output: `Error: ${input.path} not found and parent directory doesn't exist`,
+        details: { type: 'error', data: { notFound: true } }
+      }
+    }
+  }
+}
+
+async function writeFileTool(
+  input: { path: string; content: string },
+  workingDir: string
+): Promise<ToolResult> {
+  const filePath = resolvePath(input.path, workingDir)
+
+  try {
+    // Create parent directories
+    await mkdir(dirname(filePath), { recursive: true })
+
+    // Write file (atomic via temp file would be better for production)
+    await writeFile(filePath, input.content, 'utf-8')
+
+    const bytes = Buffer.byteLength(input.content, 'utf-8')
+    const lines = input.content.split('\n').length
+
+    return {
+      output: `Wrote ${bytes} bytes (${lines} lines) to ${input.path}`,
+      details: {
+        type: 'file',
+        data: { path: input.path, bytes, lines, action: 'write' }
+      }
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error'
+    return {
+      output: `Error writing ${input.path}: ${msg}`,
+      details: { type: 'error', data: { error: msg } }
+    }
+  }
+}
+
+async function editFileTool(
+  input: { path: string; oldText: string; newText: string },
+  workingDir: string
+): Promise<ToolResult> {
+  const filePath = resolvePath(input.path, workingDir)
+
+  try {
+    const content = await readFile(filePath, 'utf-8')
+
+    // Check if oldText exists
+    if (!content.includes(input.oldText)) {
+      // Try to find similar lines to help
+      const oldLines = input.oldText.split('\n')
+      const contentLines = content.split('\n')
+      const firstOldLine = oldLines[0]?.trim() ?? ''
+
+      const similar: string[] = []
+      contentLines.forEach((line, i) => {
+        if (line.includes(firstOldLine.slice(0, 20)) ||
+            firstOldLine.includes(line.trim().slice(0, 20))) {
+          similar.push(`Line ${i + 1}: ${line.slice(0, 100)}`)
+        }
+      })
+
+      const hint = similar.length > 0
+        ? `\nSimilar lines found:\n${similar.slice(0, 5).join('\n')}`
+        : '\nNo similar lines found. The text may not exist in this file.'
+
+      return {
+        output: `Error: oldText not found in ${input.path}.${hint}`,
+        details: {
+          type: 'error',
+          data: { notFound: true, similarLines: similar.slice(0, 5) }
+        }
+      }
+    }
+
+    // Check for multiple matches
+    const matchCount = content.split(input.oldText).length - 1
+    if (matchCount > 1) {
+      return {
+        output: `Error: oldText found ${matchCount} times in ${input.path}. Please provide more context to make the match unique.`,
+        details: { type: 'error', data: { multipleMatches: matchCount } }
+      }
+    }
+
+    // Perform replacement
+    const newContent = content.replace(input.oldText, input.newText)
+    await writeFile(filePath, newContent, 'utf-8')
+
+    // Calculate line numbers for the change
+    const beforeLines = content.slice(0, content.indexOf(input.oldText)).split('\n')
+    const startLine = beforeLines.length
+
+    return {
+      output: `Edited ${input.path} at line ${startLine}`,
+      details: {
+        type: 'diff',
+        data: {
+          path: input.path,
+          before: input.oldText,
+          after: input.newText,
+          startLine
+        }
+      }
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error'
+    return {
+      output: `Error editing ${input.path}: ${msg}`,
+      details: { type: 'error', data: { error: msg } }
+    }
+  }
+}
+
+async function bashTool(
+  input: { command: string; timeout?: number },
+  workingDir: string
+): Promise<ToolResult> {
+  const timeout = (input.timeout || 30) * 1000
+
+  return new Promise((resolve) => {
+    const proc = spawn('bash', ['-c', input.command], {
+      cwd: workingDir,
+      env: process.env,
+    })
+
+    let stdout = ''
+    let stderr = ''
+    let killed = false
+
+    const timer = setTimeout(() => {
+      killed = true
+      proc.kill('SIGTERM')
+      setTimeout(() => proc.kill('SIGKILL'), 1000)
+    }, timeout)
+
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString()
+      // Truncate if too large
+      if (stdout.length > 100000) {
+        stdout = stdout.slice(0, 100000) + '\n[Output truncated...]'
+      }
+    })
+
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString()
+      if (stderr.length > 50000) {
+        stderr = stderr.slice(0, 50000) + '\n[Stderr truncated...]'
+      }
+    })
+
+    proc.on('close', (code) => {
+      clearTimeout(timer)
+
+      let output = ''
+      if (stdout) output += stdout
+      if (stderr) output += (output ? '\n\nSTDERR:\n' : 'STDERR:\n') + stderr
+      if (killed) output += '\n[Command timed out after ' + (timeout / 1000) + 's]'
+      if (code !== 0 && code !== null) output += `\n[Exit code: ${code}]`
+
+      resolve({
+        output: output || '(no output)',
+        details: {
+          type: 'command',
+          data: {
+            command: input.command,
+            exitCode: code,
+            stdout,
+            stderr,
+            killed
+          }
+        }
+      })
+    })
+
+    proc.on('error', (error) => {
+      clearTimeout(timer)
+      resolve({
+        output: `Error executing command: ${error.message}`,
+        details: { type: 'error', data: { error: error.message } }
+      })
+    })
+  })
+}
+
+// Main tool executor
+export async function executeTool(
+  name: string,
+  input: Record<string, unknown>,
+  workingDir: string
+): Promise<ToolResult> {
+  switch (name) {
+    case 'read_file':
+      return readFileTool(input as { path: string; offset?: number; limit?: number }, workingDir)
+    case 'write_file':
+      return writeFileTool(input as { path: string; content: string }, workingDir)
+    case 'edit_file':
+      return editFileTool(input as { path: string; oldText: string; newText: string }, workingDir)
+    case 'bash':
+      return bashTool(input as { command: string; timeout?: number }, workingDir)
+    default:
+      return {
+        output: `Unknown tool: ${name}`,
+        details: { type: 'error', data: { unknownTool: name } }
+      }
+  }
+}
+</file>
+
+<file path="src/server/types.ts">
+import type { ProviderName } from './providers/types'
+
+// Message types for conversation history
+export interface Message {
+  role: 'user' | 'assistant'
+  content: string
+  toolCalls?: ToolCall[]
+}
+
+export interface ToolCall {
+  id: string
+  name: string
+  input: Record<string, unknown>
+  output?: string
+  details?: ToolResultDetails
+  status: 'pending' | 'running' | 'done' | 'error'
+  error?: string
+}
+
+// Structured tool result - keeps LLM context lean, UI data separate
+export interface ToolResult {
+  output: string        // For LLM (concise)
+  details?: ToolResultDetails  // For UI (rich rendering)
+}
+
+export interface ToolResultDetails {
+  type: 'file' | 'diff' | 'command' | 'error' | 'subagent'
+  data: unknown
+}
+
+// Subagent types
+export type SubagentRole = 'simple' | 'complex' | 'researcher'
+
+export interface SubagentTask {
+  id: string
+  description: string
+  role: SubagentRole
+  context?: string
+  // User can override these in confirmation
+  provider?: ProviderName
+  model?: string
+}
+
+export interface SubagentResult {
+  taskId: string
+  task: SubagentTask
+  summary: string
+  fullHistory: Message[]
+  status: 'completed' | 'error' | 'cancelled'
+  error?: string
+}
+
+// Agent events for SSE streaming
+export type AgentEvent =
+  | { type: 'text_delta'; delta: string }
+  | { type: 'tool_start'; id: string; name: string }
+  | { type: 'tool_input_delta'; id: string; partialJson: string }
+  | { type: 'tool_running'; id: string; metadata?: { title?: string } }
+  | { type: 'tool_result'; id: string; output: string; details?: ToolResultDetails; error?: string }
+  | { type: 'turn_complete'; usage?: { inputTokens: number; outputTokens: number } }
+  | { type: 'error'; error: string }
+  | { type: 'retry_countdown'; seconds: number; reason: string }
+  // Subagent events
+  | { type: 'subagent_request'; tasks: SubagentTask[] }
+  | { type: 'subagent_confirmed'; tasks: SubagentTask[] }
+  | { type: 'subagent_cancelled'; taskIds: string[] }
+  | { type: 'subagent_start'; taskId: string; description: string; role: SubagentRole }
+  | { type: 'subagent_progress'; taskId: string; event: AgentEvent }
+  | { type: 'subagent_complete'; taskId: string; summary: string; fullHistory: Message[] }
+  | { type: 'subagent_error'; taskId: string; error: string; fullHistory: Message[] }
+</file>
+
+<file path="thoughts/plans/parallel-subagents.md">
+# Parallel Subagents Implementation Plan
+
+## Overview
+
+Add a `task` tool that spawns subagents to execute tasks in parallel. Each subagent runs its own agent loop with independent provider/model configuration.
+
+## Requirements Summary
+
+1. **Parallel Execution**: Multiple subagents can run simultaneously
+2. **Configuration System**: Settings for subagent behavior stored in `.agent/config.json`
+3. **Confirmation Mode**: Option to auto-spawn or ask user before spawning
+4. **Per-Subagent Model Selection**: User can specify model/provider for each subagent when prompted
+5. **Subagent Types**: Three role types with different prompts and default models:
+   - `simple` - Simple task executor (fast, cheap model)
+   - `complex` - Complicated task executor (powerful model)
+   - `researcher` - Research/exploration focused (balanced model)
+6. **Smart Role Selection**: Prompting to help LLM pick appropriate role type
+
+---
+
+## Architecture
+
+### New Files
+
+```
+src/server/
+├── config.ts           # Configuration loading/saving
+├── subagent.ts         # Subagent execution logic
+└── tools/
+    └── task.ts         # Task tool implementation
+
+src/client/
+└── components/
+    └── SubagentConfirm.tsx  # Confirmation dialog component
+```
+
+### Modified Files
+
+```
+src/server/
+├── agent.ts            # Add subagent event handling
+├── types.ts            # New event types for subagents
+├── prompt.ts           # Add task tool guidance
+└── providers/index.ts  # Add task tool definition
+
+src/server/index.ts     # Config endpoints
+src/client/App.tsx      # Subagent confirmation UI
+```
+
+---
+
+## Phase 1: Configuration System
+
+### 1.1 Config Schema (`src/server/config.ts`)
+
+```typescript
+export interface SubagentConfig {
+  // When to confirm with user
+  confirmMode: 'always' | 'never' | 'multiple' // multiple = only when >1 agent
+
+  // Default timeout per subagent (seconds)
+  timeout: number
+
+  // Max concurrent subagents
+  maxConcurrent: number
+
+  // Role-specific defaults
+  roles: {
+    simple: {
+      provider: ProviderName
+      model: string
+      maxIterations: number
+    }
+    complex: {
+      provider: ProviderName
+      model: string
+      maxIterations: number
+    }
+    researcher: {
+      provider: ProviderName
+      model: string
+      maxIterations: number
+    }
+  }
+}
+
+export const DEFAULT_CONFIG: SubagentConfig = {
+  confirmMode: 'always',
+  timeout: 120,
+  maxConcurrent: 5,
+  roles: {
+    simple: {
+      provider: 'anthropic',
+      model: 'claude-3-5-haiku-20241022',
+      maxIterations: 10
+    },
+    complex: {
+      provider: 'anthropic',
+      model: 'claude-opus-4-5-20251101',
+      maxIterations: 25
+    },
+    researcher: {
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5-20250514',
+      maxIterations: 15
+    }
+  }
+}
+```
+
+### 1.2 Config File Location
+
+- Project-level: `{workingDir}/.agent/config.json`
+- Falls back to defaults if not present
+- API endpoints:
+  - `GET /api/config` - Load current config
+  - `PUT /api/config` - Update config
+
+---
+
+## Phase 2: Task Tool Definition
+
+### 2.1 Tool Schema
+
+```typescript
+{
+  name: 'task',
+  description: `Spawn a subagent to handle a task. Use for:
+- Parallel work that doesn't depend on each other
+- Delegating research or exploration
+- Complex subtasks that need focused attention
+
+Role selection guide:
+- simple: Quick, straightforward tasks (file reads, simple edits, commands)
+- complex: Multi-step tasks requiring reasoning and iteration
+- researcher: Exploring codebases, finding patterns, gathering information
+
+Multiple tasks are executed in parallel. Results are returned when all complete.`,
+  parameters: {
+    type: 'object',
+    properties: {
+      tasks: {
+        type: 'array',
+        description: 'List of tasks to spawn',
+        items: {
+          type: 'object',
+          properties: {
+            description: {
+              type: 'string',
+              description: 'What the subagent should do'
+            },
+            role: {
+              type: 'string',
+              enum: ['simple', 'complex', 'researcher'],
+              description: 'Task complexity/type for model selection'
+            },
+            context: {
+              type: 'string',
+              description: 'Optional additional context for the subagent'
+            }
+          },
+          required: ['description', 'role']
+        }
+      }
+    },
+    required: ['tasks']
+  }
+}
+```
+
+### 2.2 Example Usage by LLM
+
+```json
+{
+  "name": "task",
+  "input": {
+    "tasks": [
+      {
+        "description": "Find all files that import the User model",
+        "role": "researcher"
+      },
+      {
+        "description": "Read and summarize the authentication middleware",
+        "role": "simple"
+      },
+      {
+        "description": "Implement input validation for the login endpoint",
+        "role": "complex"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Phase 3: Subagent Execution
+
+### 3.1 New Types (`src/server/types.ts`)
+
+```typescript
+// New event types
+export type AgentEvent =
+  | ... existing ...
+  | { type: 'subagent_request'; tasks: SubagentTask[] }
+  | { type: 'subagent_confirmed'; tasks: SubagentTask[] }
+  | { type: 'subagent_cancelled'; taskIds: string[] }
+  | { type: 'subagent_start'; taskId: string; description: string; role: SubagentRole }
+  | { type: 'subagent_progress'; taskId: string; event: AgentEvent }
+  | { type: 'subagent_complete'; taskId: string; summary: string; fullHistory: Message[] }
+  | { type: 'subagent_error'; taskId: string; error: string; fullHistory: Message[] }
+
+export type SubagentRole = 'simple' | 'complex' | 'researcher'
+
+export interface SubagentTask {
+  id: string
+  description: string
+  role: SubagentRole
+  context?: string
+  // User can override these in confirmation
+  provider?: ProviderName
+  model?: string
+}
+```
+
+### 3.2 Subagent Execution Flow
+
+```
+1. LLM calls task tool with tasks array
+2. Agent emits 'subagent_request' event
+3. If confirmMode != 'never':
+   - UI shows confirmation dialog
+   - User can modify model/provider per task
+   - User confirms or cancels
+4. Agent receives confirmation via 'subagent_confirmed' event
+5. For each task (in parallel):
+   a. Create subagent with role-specific config
+   b. Run agent loop with task description as user message
+   c. Stream progress events (nested in subagent_progress)
+   d. Collect final result
+6. Return combined results to parent agent
+```
+
+### 3.3 Subagent Implementation (`src/server/subagent.ts`)
+
+```typescript
+export interface SubagentOptions {
+  task: SubagentTask
+  workingDir: string
+  config: SubagentConfig
+  // NO parent history - subagents get fresh context only
+}
+
+export async function* runSubagent(
+  options: SubagentOptions
+): AsyncGenerator<AgentEvent> {
+  const { task, workingDir, config } = options
+
+  // Get role config (with user overrides)
+  const roleConfig = config.roles[task.role]
+  const provider = task.provider || roleConfig.provider
+  const model = task.model || roleConfig.model
+
+  // Build subagent prompt
+  const subagentPrompt = buildSubagentPrompt(task)
+
+  yield { type: 'subagent_start', taskId: task.id, description: task.description, role: task.role }
+
+  // Run the agent loop - NO task tool available to subagents (no nesting)
+  let finalOutput = ''
+  let history: Message[] = []  // Track for expandable view
+  try {
+    for await (const event of agentLoop(
+      subagentPrompt,
+      [],  // Fresh context - no parent history
+      workingDir,
+      { provider, model, excludeTools: ['task'] }  // Prevent nested spawning
+    )) {
+      // Forward events with taskId wrapper
+      yield { type: 'subagent_progress', taskId: task.id, event }
+
+      // Capture final text output (this is the summary)
+      if (event.type === 'text_delta') {
+        finalOutput += event.delta
+      }
+
+      // Track history for UI
+      // (accumulate messages as they come in)
+    }
+
+    // The final text output IS the summary (prompted to be concise)
+    yield {
+      type: 'subagent_complete',
+      taskId: task.id,
+      summary: finalOutput,  // Goes to parent agent
+      fullHistory: history   // Only for UI expansion
+    }
+  } catch (error) {
+    yield {
+      type: 'subagent_error',
+      taskId: task.id,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      fullHistory: history  // Still provide history for debugging
+    }
+  }
+}
+
+function buildSubagentPrompt(task: SubagentTask): string {
+  const rolePrompts = {
+    simple: 'Complete this task efficiently.',
+    complex: 'Carefully work through this task step by step. Think before acting.',
+    researcher: 'Explore and gather information thoroughly.'
+  }
+
+  return `${rolePrompts[task.role]}
+
+Task: ${task.description}
+${task.context ? `\nContext: ${task.context}` : ''}
+
+IMPORTANT: When you're done, output a brief summary (2-4 sentences) of what you accomplished or found. This summary will be returned to the orchestrating agent.`
+}
+```
+
+### 3.4 Parallel Execution in Task Tool
+
+```typescript
+// In tools/task.ts
+export async function* executeTaskTool(
+  input: { tasks: SubagentTask[] },
+  workingDir: string,
+  config: SubagentConfig,
+  onConfirm: (tasks: SubagentTask[]) => Promise<SubagentTask[] | null>
+): AsyncGenerator<AgentEvent> {
+  // Assign IDs
+  const tasks = input.tasks.map((t, i) => ({
+    ...t,
+    id: `subagent_${Date.now()}_${i}`
+  }))
+
+  // Request confirmation if needed
+  if (config.confirmMode === 'always' ||
+      (config.confirmMode === 'multiple' && tasks.length > 1)) {
+    yield { type: 'subagent_request', tasks }
+
+    // Wait for user confirmation
+    const confirmed = await onConfirm(tasks)
+    if (!confirmed) {
+      return { output: 'Task execution cancelled by user' }
+    }
+
+    yield { type: 'subagent_confirmed', tasks: confirmed }
+  }
+
+  // Run all tasks in parallel
+  const generators = tasks.map(task =>
+    runSubagent({ task, workingDir, config })
+  )
+
+  // Merge streams and collect summaries (NOT full history)
+  const summaries: Map<string, string> = new Map()
+
+  // Use Promise.all with async iteration
+  await Promise.all(
+    generators.map(async (gen, i) => {
+      for await (const event of gen) {
+        yield event
+        if (event.type === 'subagent_complete') {
+          summaries.set(event.taskId, event.summary)
+        }
+      }
+    })
+  )
+
+  // Format summaries for parent agent (lean context)
+  const output = tasks.map((task, i) =>
+    `## Task ${i + 1}: ${task.description}\n\n${summaries.get(task.id) || '(no result)'}`
+  ).join('\n\n---\n\n')
+
+  return { output }  // Parent only sees summaries, not full subagent histories
+}
+```
+
+---
+
+## Phase 4: UI Components
+
+### 4.1 Subagent Confirmation Dialog
+
+```tsx
+// src/client/components/SubagentConfirm.tsx
+interface SubagentConfirmProps {
+  tasks: SubagentTask[]
+  providers: ProviderInfo[]
+  onConfirm: (tasks: SubagentTask[]) => void
+  onCancel: () => void
+}
+
+function SubagentConfirm({ tasks, providers, onConfirm, onCancel }: SubagentConfirmProps) {
+  const [editedTasks, setEditedTasks] = createSignal([...tasks])
+
+  return (
+    <div class="subagent-confirm-overlay">
+      <div class="subagent-confirm-dialog">
+        <h3>Spawn {tasks.length} Subagent{tasks.length > 1 ? 's' : ''}?</h3>
+
+        <div class="subagent-list">
+          <For each={editedTasks()}>
+            {(task, i) => (
+              <div class="subagent-item">
+                <div class="task-header">
+                  <span class="task-role">{task.role}</span>
+                  <span class="task-description">{task.description}</span>
+                </div>
+
+                <div class="task-config">
+                  <select
+                    value={task.provider}
+                    onChange={(e) => updateTask(i(), 'provider', e.target.value)}
+                  >
+                    <For each={providers}>
+                      {(p) => <option value={p.name}>{p.name}</option>}
+                    </For>
+                  </select>
+
+                  <select
+                    value={task.model}
+                    onChange={(e) => updateTask(i(), 'model', e.target.value)}
+                  >
+                    <For each={getModelsForProvider(task.provider)}>
+                      {(m) => <option value={m.id}>{m.name}</option>}
+                    </For>
+                  </select>
+                </div>
+              </div>
+            )}
+          </For>
+        </div>
+
+        <div class="dialog-actions">
+          <button onClick={onCancel}>Cancel</button>
+          <button onClick={() => onConfirm(editedTasks())} class="primary">
+            Spawn Agents
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+```
+
+### 4.2 Subagent Progress Display
+
+Show running subagents with cancel button and live status:
+
+```tsx
+// Running subagent card
+function SubagentRunning({ task, onCancel }: { task: SubagentTask; onCancel: () => void }) {
+  return (
+    <div class="subagent-card running">
+      <div class="subagent-header">
+        <span class="role-badge">{task.role}</span>
+        <span class="description">{task.description}</span>
+        <button class="cancel-btn" onClick={onCancel} title="Cancel">×</button>
+      </div>
+      <div class="subagent-status">
+        <Spinner /> Running...
+      </div>
+    </div>
+  )
+}
+```
+
+### 4.3 Subagent Result Display (Expandable Window)
+
+Show summary with click-to-expand into full scrollable window:
+
+```tsx
+function SubagentResult({ task, result, fullHistory }: SubagentResultProps) {
+  const [expanded, setExpanded] = createSignal(false)
+
+  return (
+    <>
+      <div class="subagent-card completed" onClick={() => setExpanded(true)}>
+        <div class="subagent-header">
+          <span class="role-badge">{task.role}</span>
+          <span class="description">{task.description}</span>
+          <span class="expand-hint">Click to expand</span>
+        </div>
+        <div class="subagent-summary">
+          {result.slice(0, 200)}...
+        </div>
+      </div>
+
+      {expanded() && (
+        <SubagentWindow
+          task={task}
+          history={fullHistory}
+          onClose={() => setExpanded(false)}
+        />
+      )}
+    </>
+  )
+}
+
+// Full window overlay with scrollable history
+function SubagentWindow({ task, history, onClose }: SubagentWindowProps) {
+  return (
+    <div class="subagent-window-overlay" onClick={onClose}>
+      <div class="subagent-window" onClick={(e) => e.stopPropagation()}>
+        <div class="window-header">
+          <span class="role-badge">{task.role}</span>
+          <span class="description">{task.description}</span>
+          <button class="close-btn" onClick={onClose}>×</button>
+        </div>
+        <div class="window-content">
+          <For each={history}>
+            {(msg) => <MessageDisplay message={msg} />}
+          </For>
+        </div>
+      </div>
+    </div>
+  )
+}
+```
+
+---
+
+## Phase 5: Integration
+
+### 5.1 Modified Agent Loop (`src/server/agent.ts`)
+
+The main agent loop needs to:
+1. Recognize the `task` tool as special
+2. Handle the confirmation flow
+3. Stream subagent events to the client
+
+```typescript
+// In agent.ts, modify tool execution section
+if (tool.name === 'task') {
+  // Special handling for task tool
+  const taskInput = tool.input as { tasks: SubagentTask[] }
+
+  for await (const event of executeTaskTool(
+    taskInput,
+    workingDir,
+    config,
+    async (tasks) => {
+      // Emit request and wait for confirmation via SSE
+      yield { type: 'subagent_request', tasks }
+      return await waitForConfirmation()
+    }
+  )) {
+    yield event
+  }
+} else {
+  // Normal tool execution
+  const result = await executeTool(tool.name, tool.input, workingDir)
+  // ...
+}
+```
+
+### 5.2 SSE Confirmation Flow
+
+The confirmation flow requires bidirectional communication:
+
+1. Server emits `subagent_request` event
+2. Client shows dialog
+3. Client sends confirmation via new endpoint: `POST /api/confirm-subagents`
+4. Server continues execution
+
+Alternative: Use a callback-based approach where the server polls for confirmation.
+
+### 5.3 Updated System Prompt
+
+Add guidance for the task tool in `src/server/prompt.ts`:
+
+```typescript
+export const SYSTEM_PROMPT = `You are a coding assistant...
+
+Tools: read_file, write_file, edit_file, bash, task
+
+Guidelines:
+- Read files before editing
+- Use edit_file for precise changes
+- Use bash for ls, grep, find, git
+- Use task tool for parallel work:
+  - 'simple' role: quick file operations, simple queries
+  - 'complex' role: multi-step implementations, refactoring
+  - 'researcher' role: exploring code, finding patterns
+- Be concise`
+```
+
+---
+
+## Implementation Order
+
+1. **Config system** (1-2 hours)
+   - Create `config.ts` with types and loading logic
+   - Add API endpoints for config
+   - Add default config file generation
+
+2. **Task tool definition** (1 hour)
+   - Add tool schema to `providers/index.ts`
+   - Update system prompt
+
+3. **Subagent execution** (2-3 hours)
+   - Create `subagent.ts`
+   - Implement parallel execution
+   - Handle streaming events
+
+4. **Agent integration** (2-3 hours)
+   - Modify `agent.ts` for task tool handling
+   - Implement confirmation flow
+   - Add new event types
+
+5. **UI components** (2-3 hours)
+   - Create confirmation dialog
+   - Add subagent progress display
+   - Style appropriately
+
+6. **Testing** (1-2 hours)
+   - Test parallel execution
+   - Test confirmation flow
+   - Test error handling
+
+---
+
+## Design Decisions
+
+1. **Context Sharing**: NO. Subagents receive ONLY the prompt from parent.
+   - Fresh context, no parent history
+   - Parent must provide all necessary context in the task description
+
+2. **Result Aggregation**: Summary for parent, full history for UI
+   - Subagent generates a concise summary as its final output
+   - Parent agent receives ONLY the summary (not full history)
+   - UI shows summary card, click to expand into scrollable window with full history
+   - Keeps parent context lean while preserving debuggability
+
+3. **Cancellation**: Yes, if intuitive
+   - Show cancel button per running subagent
+   - Graceful termination (let current tool finish, don't start new iteration)
+
+4. **Nesting**: ABSOLUTELY NOT.
+   - Subagents do NOT have access to the `task` tool
+   - Prevents runaway agent spawning
+   - Keep architecture simple and predictable
+
+---
+
+## Success Criteria
+
+- [x] User can configure subagent defaults in `.agent/config.json`
+- [x] LLM can spawn multiple subagents with single tool call
+- [x] Subagents run in parallel (not sequential)
+- [x] Confirmation dialog shows before spawning (when configured)
+- [x] User can override model/provider per subagent
+- [x] Progress is shown for each running subagent
+- [x] Results are aggregated and returned to parent agent
+- [x] Errors in one subagent don't crash others
+</file>
+
+<file path=".env.example">
+# LLM Provider API Keys
+# Set at least one of these to enable the corresponding provider
+
+# Anthropic (Claude)
+ANTHROPIC_API_KEY=your-anthropic-key-here
+# ANTHROPIC_MODEL=claude-sonnet-4-20250514
+
+# xAI (Grok)
+XAI_API_KEY=your-xai-key-here
+# XAI_MODEL=grok-3-beta
+
+# OpenAI (GPT)
+# OPENAI_API_KEY=your-openai-key-here
+# OPENAI_MODEL=gpt-4o
+
+# Optional: Set preferred provider (anthropic, xai, openai)
+# If not set, uses the first available provider
+# LLM_PROVIDER=anthropic
+
+# Server port (default: 3001)
+# PORT=3001
+</file>
+
+<file path=".gitignore">
+# dependencies (bun install)
+node_modules
+
+# output
+out
+dist
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+</file>
+
+<file path="CLAUDE.md">
+---
+description: Use Bun instead of Node.js, npm, pnpm, or vite.
+globs: "*.ts, *.tsx, *.html, *.css, *.js, *.jsx, package.json"
+alwaysApply: false
+---
+
+Default to using Bun instead of Node.js.
+
+- Use `bun <file>` instead of `node <file>` or `ts-node <file>`
+- Use `bun test` instead of `jest` or `vitest`
+- Use `bun build <file.html|file.ts|file.css>` instead of `webpack` or `esbuild`
+- Use `bun install` instead of `npm install` or `yarn install` or `pnpm install`
+- Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
+- Bun automatically loads .env, so don't use dotenv.
+
+## APIs
+
+- `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.
+- `bun:sqlite` for SQLite. Don't use `better-sqlite3`.
+- `Bun.redis` for Redis. Don't use `ioredis`.
+- `Bun.sql` for Postgres. Don't use `pg` or `postgres.js`.
+- `WebSocket` is built-in. Don't use `ws`.
+- Prefer `Bun.file` over `node:fs`'s readFile/writeFile
+- Bun.$`ls` instead of execa.
+
+## Testing
+
+Use `bun test` to run tests.
+
+```ts#index.test.ts
+import { test, expect } from "bun:test";
+
+test("hello world", () => {
+  expect(1).toBe(1);
+});
+```
+
+## Frontend
+
+Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
+
+Server:
+
+```ts#index.ts
+import index from "./index.html"
+
+Bun.serve({
+  routes: {
+    "/": index,
+    "/api/users/:id": {
+      GET: (req) => {
+        return new Response(JSON.stringify({ id: req.params.id }));
+      },
+    },
+  },
+  // optional websocket support
+  websocket: {
+    open: (ws) => {
+      ws.send("Hello, world!");
+    },
+    message: (ws, message) => {
+      ws.send(message);
+    },
+    close: (ws) => {
+      // handle close
+    }
+  },
+  development: {
+    hmr: true,
+    console: true,
+  }
+})
+```
+
+HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
+
+```html#index.html
+<html>
+  <body>
+    <h1>Hello, world!</h1>
+    <script type="module" src="./frontend.tsx"></script>
+  </body>
+</html>
+```
+
+With the following `frontend.tsx`:
+
+```tsx#frontend.tsx
+import React from "react";
+
+// import .css files directly and it works
+import './index.css';
+
+import { createRoot } from "react-dom/client";
+
+const root = createRoot(document.body);
+
+export default function Frontend() {
+  return <h1>Hello, world!</h1>;
+}
+
+root.render(<Frontend />);
+```
+
+Then, run index.ts
+
+```sh
+bun --hot ./index.ts
+```
+
+For more information, read the Bun API docs in `node_modules/bun-types/docs/**.md`.
+</file>
+
+<file path="package.json">
+{
+  "name": "agent",
+  "version": "0.1.0",
+  "module": "src/server/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"bun run dev:server\" \"bun run dev:client\"",
+    "dev:server": "bun --watch src/server/index.ts",
+    "dev:client": "vite",
+    "build": "vite build && bun build src/server/index.ts --outdir=dist/server --target=node",
+    "start": "bun dist/server/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^24.10.1",
+    "concurrently": "^9.2.1",
+    "solid-js": "^1.9.10",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.6",
+    "vite-plugin-solid": "^2.11.10"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.1",
+    "@hono/node-server": "^1.19.6",
+    "hono": "^4.10.7",
+    "openai": "^6.10.0",
+    "zod": "^4.1.13"
+  }
+}
+</file>
+
+<file path="README.md">
+# Agent
+
+A minimal, web-based AI coding agent with streaming tool execution and terminal-style UI. Supports multiple LLM providers (Anthropic, xAI, OpenAI).
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  agent v0.1                    [Grok]   [idle]  [tokens: 1.2k]  │
+├─────────────────────────────────────────────────────────────────┤
+│  > read_file src/index.ts                          [done ✓]    │
+│    const app = new Hono()                                       │
+│                                                                 │
+│  > edit_file src/index.ts                      [running...]    │
+│    - oldText: "Hello"                                           │
+│    + newText: "Hello World"                                     │
+├─────────────────────────────────────────────────────────────────┤
+│  > _                                                            │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          Client                                  │
+│  Solid.js + SSE Consumer + Terminal UI                          │
+│  - Streaming message display                                     │
+│  - Real-time tool call visualization                            │
+│  - Provider selection dropdown                                   │
+│  - Session management                                            │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              │ SSE
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                          Server                                  │
+│  Hono + SSE Producer + Tool Executor                            │
+│  - Multi-provider agent loop                                    │
+│  - 4 core tools (read, write, edit, bash)                       │
+│  - Project instructions loader                                   │
+│  - Session persistence                                           │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              │ API
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    LLM Providers                                 │
+│  Anthropic (Claude) | xAI (Grok) | OpenAI (GPT)                 │
+│  Unified provider abstraction with streaming                     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Supported Providers
+
+| Provider | Models | API Compatible |
+|----------|--------|----------------|
+| **Anthropic** | claude-sonnet-4, claude-opus-4 | Native |
+| **xAI** | grok-3-beta, grok-2 | OpenAI-compatible |
+| **OpenAI** | gpt-4o, gpt-4-turbo | Native |
+
+Switch providers in the UI via the dropdown, or per-request via the API.
+
+## Tech Stack
+
+| Layer | Technology | Rationale |
+|-------|------------|-----------|
+| Runtime | **Bun** | Fast startup, native TypeScript, built-in bundler |
+| Server | **Hono** | Lightweight, fast, great SSE support |
+| Frontend | **Solid.js** | Fine-grained reactivity, perfect for streaming UX |
+| LLM | **Multi-provider** | Anthropic SDK + OpenAI SDK for flexibility |
+| Validation | **Zod** | Type-safe schemas, good error messages |
+
+## Design Philosophy
+
+This agent follows the **pi-ai minimal approach**:
+
+1. **Minimal System Prompt** (~100 tokens) - Models are RL-trained to understand coding tasks. Elaborate prompts waste context.
+
+2. **Four Tools Only** - `read_file`, `write_file`, `edit_file`, `bash`. These four primitives handle all coding tasks. Bash subsumes ls, grep, find, git.
+
+3. **YOLO Mode** - No permission prompts. Security theater is pointless when an agent can write and execute code.
+
+4. **Structured Tool Results** - Separate LLM-facing output (concise) from UI-facing details (rich). Keeps context lean.
+
+5. **Observable Execution** - Every tool call streams to the UI in real-time. Full visibility into what the agent does.
+
+6. **Provider Agnostic** - Same agent loop works with any provider. Easy to add new providers.
+
+## Features
+
+- **Multi-Provider Support** - Switch between Claude, Grok, GPT from the UI
+- **Streaming Tool Calls** - Watch tool arguments appear as the model generates them
+- **Real-time Execution** - See tool results immediately as they complete
+- **Diff Visualization** - Edit operations show before/after with syntax highlighting
+- **Session Persistence** - Save and resume conversations
+- **Project Instructions** - Loads CLAUDE.md/AGENTS.md for context-aware assistance
+- **Token Tracking** - Monitor context window usage
+- **Doom Loop Detection** - Breaks out of repeated identical tool calls
+
+## Quick Start
+
+### Prerequisites
+
+- [Bun](https://bun.sh) v1.0+
+- At least one API key (Anthropic, xAI, or OpenAI)
+
+### Setup
+
+```bash
+# Clone and install
+cd agent
+bun install
+
+# Configure API keys
+cp .env.example .env
+# Edit .env and add your API key(s)
+
+# Run development server
+bun run dev
+```
+
+Open http://localhost:3000 in your browser.
+
+### Configuration
+
+Set one or more API keys in `.env`:
+
+```bash
+# Anthropic (Claude)
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-sonnet-4-20250514  # optional
+
+# xAI (Grok)
+XAI_API_KEY=xai-...
+XAI_MODEL=grok-3-beta  # optional
+
+# OpenAI (GPT)
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o  # optional
+
+# Optional: Set default provider
+LLM_PROVIDER=xai  # anthropic, xai, or openai
+```
+
+### Usage
+
+Type a message and press Enter. The agent will:
+1. Think about your request
+2. Execute tools as needed (visible in real-time)
+3. Provide a response
+
+Click the provider name in the header to switch between available providers.
+
+Example prompts:
+- "List the files in this directory"
+- "Read package.json and tell me what dependencies we have"
+- "Create a simple hello world TypeScript file"
+- "Edit index.ts to add error handling"
+
+## Project Structure
+
+```
+agent/
+├── package.json
+├── .env.example
+├── src/
+│   ├── server/
+│   │   ├── index.ts           # Hono app, API routes
+│   │   ├── agent.ts           # Multi-provider agent loop
+│   │   ├── tools.ts           # 4 tool implementations
+│   │   ├── prompt.ts          # System prompt, project instructions
+│   │   ├── sessions.ts        # Session persistence
+│   │   ├── types.ts           # TypeScript interfaces
+│   │   └── providers/
+│   │       ├── index.ts       # Provider registry
+│   │       ├── types.ts       # Provider interfaces
+│   │       ├── anthropic.ts   # Anthropic provider
+│   │       └── openai-compatible.ts  # xAI/OpenAI provider
+│   └── client/
+│       ├── index.html
+│       ├── App.tsx            # Main Solid.js component
+│       └── styles.css         # Terminal-style CSS
+├── vite.config.ts
+└── tsconfig.json
+```
+
+## API Reference
+
+### POST /api/chat
+
+Stream agent responses via SSE.
+
+**Request:**
+```json
+{
+  "message": "Your prompt here",
+  "history": [],
+  "workingDir": "/path/to/project",
+  "sessionId": "optional-session-id",
+  "provider": "xai",
+  "model": "grok-3-beta"
+}
+```
+
+**SSE Events:**
+- `text_delta` - Streaming text content
+- `tool_start` - Tool execution begins
+- `tool_input_delta` - Streaming tool arguments
+- `tool_running` - Tool is executing
+- `tool_result` - Tool completed with output
+- `turn_complete` - Agent finished responding
+- `error` - Error occurred
+
+### GET /api/providers
+
+List available providers based on configured API keys.
+
+**Response:**
+```json
+{
+  "providers": [
+    { "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
+    { "provider": "xai", "model": "grok-3-beta" }
+  ]
+}
+```
+
+### Session Endpoints
+
+- `GET /api/sessions` - List saved sessions
+- `POST /api/sessions` - Create new session
+- `GET /api/sessions/:id` - Load session
+- `PUT /api/sessions/:id` - Update session
+- `DELETE /api/sessions/:id` - Delete session
+
+## Tool Reference
+
+### read_file
+
+Read file contents with optional line range.
+
+```json
+{
+  "path": "src/index.ts",
+  "offset": 1,
+  "limit": 100
+}
+```
+
+### write_file
+
+Create or overwrite a file. Auto-creates parent directories.
+
+```json
+{
+  "path": "src/new-file.ts",
+  "content": "export const hello = 'world'"
+}
+```
+
+### edit_file
+
+Replace exact text in a file. Must match exactly.
+
+```json
+{
+  "path": "src/index.ts",
+  "oldText": "const x = 1",
+  "newText": "const x = 2"
+}
+```
+
+### bash
+
+Execute shell commands.
+
+```json
+{
+  "command": "ls -la src/",
+  "timeout": 30
+}
+```
+
+## Adding New Providers
+
+To add a new OpenAI-compatible provider:
+
+```typescript
+// In providers/openai-compatible.ts
+export function createNewProvider(apiKey?: string, model?: string): OpenAICompatibleProvider {
+  return new OpenAICompatibleProvider({
+    name: 'newprovider',
+    apiKey: apiKey || process.env.NEWPROVIDER_API_KEY || '',
+    baseURL: 'https://api.newprovider.com/v1',
+    model: model || 'default-model'
+  })
+}
+```
+
+Then register it in `providers/index.ts` and `providers/types.ts`.
+
+## AI Methodology
+
+This project was built using an AI-assisted development workflow:
+
+### Coding Agents Used
+
+- **Claude Code** (Opus 4.5) - Primary development agent for architecture, implementation, and debugging
+
+### Development Approach
+
+1. **Research Phase** - Studied existing coding agents (Claude Code, pi-ai, OpenCode) to understand architectural patterns
+2. **Architecture Design** - Created PRD with key decisions: minimal prompting, 4 tools, streaming-first, multi-provider
+3. **Iterative Implementation** - Built core features incrementally with continuous testing
+4. **Prompt Engineering** - Refined system prompt to ~100 tokens based on pi-ai benchmarks
+
+### Key Insights from Research
+
+- **Less is more** - Pi-ai's Terminal-Bench results prove minimal prompts work as well as elaborate ones
+- **Bash subsumes many tools** - No need for separate ls, grep, find tools when bash handles them
+- **Streaming UX matters** - Real-time tool call visibility dramatically improves user experience
+- **Context is king** - Keep tool results concise for the LLM, rich for the UI
+- **Provider flexibility** - Different models excel at different tasks; easy switching is valuable
+
+### Prompting Philosophy
+
+The system prompt is intentionally minimal:
+
+```
+You are a coding assistant. Help with coding tasks by reading files,
+executing commands, editing code, and writing files.
+
+Tools: read_file, write_file, edit_file, bash
+
+Guidelines:
+- Read files before editing
+- Use edit_file for precise changes (oldText must match exactly)
+- Use bash for ls, grep, find, git
+- Be concise
+```
+
+This works because:
+1. Frontier models have extensive RL training on coding tasks
+2. Tool schemas are self-documenting
+3. Additional instructions can be injected via CLAUDE.md
+
+## License
+
+MIT
+</file>
+
+<file path="tsconfig.json">
+{
+  "compilerOptions": {
+    // Environment setup & latest features
+    "lib": ["ESNext", "DOM"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleDetection": "force",
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
+    "allowJs": true,
+
+    // Bundler mode
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    // Best practices
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    // Some stricter flags (disabled by default)
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noPropertyAccessFromIndexSignature": false
+  },
+  "include": ["src/**/*", "vite.config.ts"]
+}
+</file>
+
+<file path="vite.config.ts">
+import { defineConfig } from 'vite'
+import solid from 'vite-plugin-solid'
+
+export default defineConfig({
+  plugins: [solid()],
+  root: 'src/client',
+  server: {
+    port: 3000,
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+      },
+    },
+  },
+  build: {
+    outDir: '../../dist/client',
+  },
+})
+</file>
+
+</files>

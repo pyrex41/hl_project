@@ -1,22 +1,28 @@
 {
-  "confirmMode": "always",
-  "timeout": 120,
-  "maxConcurrent": 5,
-  "roles": {
-    "simple": {
-      "provider": "xai",
-      "model": "grok-code-fast-1",
-      "maxIterations": 10
-    },
-    "complex": {
-      "provider": "xai",
-      "model": "grok-4-1-fast-reasoning",
-      "maxIterations": 25
-    },
-    "researcher": {
-      "provider": "xai",
-      "model": "grok-4-1-fast-reasoning",
-      "maxIterations": 15
+  "mainChat": {
+    "provider": "xai",
+    "model": "grok-4-1-fast-reasoning"
+  },
+  "subagents": {
+    "confirmMode": "always",
+    "timeout": 120,
+    "maxConcurrent": 5,
+    "roles": {
+      "simple": {
+        "provider": "xai",
+        "model": "grok-code-fast-1",
+        "maxIterations": 10
+      },
+      "complex": {
+        "provider": "xai",
+        "model": "grok-4-1-fast-reasoning",
+        "maxIterations": 25
+      },
+      "researcher": {
+        "provider": "xai",
+        "model": "grok-4-1-fast-reasoning",
+        "maxIterations": 15
+      }
     }
   }
 }
