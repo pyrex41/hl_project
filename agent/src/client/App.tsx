@@ -1064,6 +1064,46 @@ function App() {
     return n.toString()
   }
 
+  // Simple markdown renderer for assistant messages
+  const renderMarkdown = (text: string) => {
+    if (!text) return ''
+
+    let html = text
+      // Escape HTML first
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      // Code blocks (must be before inline code)
+      .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+      // Inline code
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      // Bold
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      // Italic
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/_([^_]+)_/g, '<em>$1</em>')
+      // Headers
+      .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+      .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+      .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+      // Blockquotes
+      .replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>')
+      // Horizontal rules
+      .replace(/^---$/gm, '<hr>')
+      // Links
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      // Lists (simple)
+      .replace(/^- (.+)$/gm, '<li>$1</li>')
+      .replace(/^\* (.+)$/gm, '<li>$1</li>')
+      .replace(/^(\d+)\. (.+)$/gm, '<li>$2</li>')
+
+    // Wrap consecutive <li> in <ul>
+    html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+
+    return html
+  }
+
   const formatDate = (isoDate: string) => {
     const date = new Date(isoDate)
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -1829,7 +1869,7 @@ function App() {
                     </For>
                   </Show>
                   <Show when={msg.content}>
-                    <div class="message-assistant">{msg.content}</div>
+                    <div class="message-assistant" innerHTML={renderMarkdown(msg.content)} />
                   </Show>
                 </Show>
               </div>
@@ -1935,10 +1975,17 @@ function App() {
             )}
           </For>
 
+          {/* Thinking indicator - shown when model is thinking but no text yet */}
+          <Show when={status() === 'thinking' && !currentAssistant() && currentTools().size === 0}>
+            <div class="message">
+              <div class="thinking-indicator">Thinking...</div>
+            </div>
+          </Show>
+
           {/* Current assistant text - shown last (this is the parent's final response) */}
           <Show when={currentAssistant()}>
             <div class="message">
-              <div class="message-assistant">{currentAssistant()}</div>
+              <div class="message-assistant" innerHTML={renderMarkdown(currentAssistant())} />
             </div>
           </Show>
 
@@ -2014,7 +2061,7 @@ function App() {
                               </For>
                             </Show>
                             <Show when={msg.content}>
-                              <div class="message-assistant">{msg.content}</div>
+                              <div class="message-assistant" innerHTML={renderMarkdown(msg.content)} />
                             </Show>
                           </Show>
                         </div>
@@ -2048,7 +2095,7 @@ function App() {
                           </For>
                         </Show>
                         <Show when={sa().currentText}>
-                          <div class="message-assistant">{sa().currentText}</div>
+                          <div class="message-assistant" innerHTML={renderMarkdown(sa().currentText || '')} />
                         </Show>
                       </div>
                     </Show>
@@ -2300,7 +2347,7 @@ function App() {
                           </For>
                         </Show>
                         <Show when={msg.content}>
-                          <div class="message-assistant">{msg.content}</div>
+                          <div class="message-assistant" innerHTML={renderMarkdown(msg.content)} />
                         </Show>
                       </Show>
                     </div>
@@ -2334,7 +2381,7 @@ function App() {
                       </For>
                     </Show>
                     <Show when={subagent().currentText}>
-                      <div class="message-assistant">{subagent().currentText}</div>
+                      <div class="message-assistant" innerHTML={renderMarkdown(subagent().currentText || '')} />
                     </Show>
                   </div>
                 </Show>
