@@ -386,111 +386,167 @@ function App() {
     setShowSessions(false)
   }
 
+  const getProviderIcon = (provider: string) => {
+    const icons: Record<string, string> = {
+      anthropic: '◈',
+      xai: '✧',
+      openai: '◉'
+    }
+    return icons[provider] || '○'
+  }
+
   const getProviderLabel = (provider: string) => {
     const labels: Record<string, string> = {
-      anthropic: 'Claude',
-      xai: 'Grok',
-      openai: 'GPT'
+      anthropic: 'Anthropic',
+      xai: 'xAI',
+      openai: 'OpenAI'
     }
     return labels[provider] || provider
   }
 
-  const getCurrentProviderInfo = () => {
-    const provider = selectedProvider()
-    const model = selectedModel()
-    if (!provider) return 'No provider'
-    const shortModel = model ? model.split('-').slice(0, 2).join('-') : 'default'
-    return `${getProviderLabel(provider)} / ${shortModel}`
+  const getShortModelName = (modelId: string | null) => {
+    if (!modelId) return 'select model'
+    // Extract meaningful part of model name
+    // claude-sonnet-4-20250514 -> sonnet-4
+    // grok-3-beta -> grok-3
+    // gpt-4o -> gpt-4o
+    const parts = modelId.split('-')
+    if (modelId.startsWith('claude-')) {
+      return parts.slice(1, 3).join('-')
+    }
+    if (modelId.startsWith('grok-')) {
+      return parts.slice(0, 2).join('-')
+    }
+    return parts.slice(0, 2).join('-')
   }
 
   const getModelDisplayName = (model: ModelInfo) => {
-    // Use the name if different from ID, otherwise format the ID nicely
     if (model.name && model.name !== model.id) {
       return model.name
     }
     return model.id
   }
 
+  const closeAllDropdowns = () => {
+    setShowProviders(false)
+    setShowModels(false)
+  }
+
   return (
     <>
       <header class="header">
-        <div style="display: flex; align-items: center; gap: 12px">
-          <span class="header-title">agent v0.1</span>
+        <div class="header-left">
+          <span class="header-title">agent</span>
+          <span class="header-version">v0.1</span>
+          <div class="header-divider" />
           <button
             class="header-btn"
             onClick={() => setShowSessions(!showSessions())}
-            title="Sessions"
+            title="Sessions (Ctrl+S)"
           >
-            {showSessions() ? '×' : '☰'}
+            <span class="btn-icon">≡</span>
           </button>
           <button
             class="header-btn"
             onClick={startNewChat}
-            title="New Chat"
+            title="New Chat (Ctrl+N)"
           >
-            +
+            <span class="btn-icon">+</span>
           </button>
         </div>
-        <div class="header-status">
-          <span class="status-item provider-selector" onClick={() => setShowProviders(!showProviders())}>
-            {getProviderLabel(selectedProvider() || '')}
+
+        <div class="header-center">
+          <div class="model-picker">
+            <button
+              class="model-picker-btn"
+              onClick={() => {
+                setShowModels(false)
+                setShowProviders(!showProviders())
+              }}
+            >
+              <span class="provider-icon">{getProviderIcon(selectedProvider() || '')}</span>
+              <span class="provider-label">{getProviderLabel(selectedProvider() || '')}</span>
+              <span class="picker-arrow">▾</span>
+            </button>
+            <span class="model-separator">/</span>
+            <button
+              class="model-picker-btn model-btn"
+              onClick={() => {
+                setShowProviders(false)
+                setShowModels(!showModels())
+              }}
+            >
+              <span class="model-label">{getShortModelName(selectedModel())}</span>
+              <span class="picker-arrow">▾</span>
+            </button>
+
             <Show when={showProviders()}>
-              <div class="provider-dropdown">
+              <div class="picker-dropdown provider-dropdown">
+                <div class="dropdown-header">Select Provider</div>
                 <For each={providers()}>
                   {(p) => (
-                    <div
-                      class={`provider-option ${selectedProvider() === p.provider ? 'active' : ''}`}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        handleProviderChange(p.provider)
-                      }}
+                    <button
+                      class={`dropdown-item ${selectedProvider() === p.provider ? 'active' : ''}`}
+                      onClick={() => handleProviderChange(p.provider)}
                     >
-                      <span class="provider-name">{getProviderLabel(p.provider)}</span>
-                    </div>
+                      <span class="item-icon">{getProviderIcon(p.provider)}</span>
+                      <span class="item-label">{getProviderLabel(p.provider)}</span>
+                      <Show when={selectedProvider() === p.provider}>
+                        <span class="item-check">✓</span>
+                      </Show>
+                    </button>
                   )}
                 </For>
                 <Show when={providers().length === 0}>
-                  <div class="provider-option disabled">No providers configured</div>
+                  <div class="dropdown-empty">No providers configured</div>
                 </Show>
               </div>
             </Show>
-          </span>
-          <span class="status-item model-selector" onClick={() => setShowModels(!showModels())}>
-            {selectedModel() ? selectedModel()?.split('-').slice(0, 2).join('-') : 'model'}
+
             <Show when={showModels()}>
-              <div class="model-dropdown">
-                <Show when={loadingModels()}>
-                  <div class="model-option disabled">Loading models...</div>
-                </Show>
+              <div class="picker-dropdown model-dropdown">
+                <div class="dropdown-header">
+                  Select Model
+                  <Show when={loadingModels()}>
+                    <span class="loading-indicator">...</span>
+                  </Show>
+                </div>
                 <Show when={!loadingModels()}>
                   <For each={models()}>
                     {(m) => (
-                      <div
-                        class={`model-option ${selectedModel() === m.id ? 'active' : ''}`}
-                        onClick={(e) => {
-                          e.stopPropagation()
+                      <button
+                        class={`dropdown-item ${selectedModel() === m.id ? 'active' : ''}`}
+                        onClick={() => {
                           setSelectedModel(m.id)
                           setShowModels(false)
                         }}
                       >
-                        <span class="model-name">{getModelDisplayName(m)}</span>
-                      </div>
+                        <span class="item-label">{getModelDisplayName(m)}</span>
+                        <Show when={selectedModel() === m.id}>
+                          <span class="item-check">✓</span>
+                        </Show>
+                      </button>
                     )}
                   </For>
                   <Show when={models().length === 0}>
-                    <div class="model-option disabled">No models available</div>
+                    <div class="dropdown-empty">No models available</div>
                   </Show>
                 </Show>
               </div>
             </Show>
-          </span>
-          <span class="status-item">
-            <span class={`status-dot ${status() === 'thinking' || status() === 'executing' ? 'thinking' : status() === 'error' ? 'error' : ''}`} />
-            {status()}
-          </span>
-          <span class="status-item">
-            tokens: {formatTokens(tokens().input + tokens().output)}
-          </span>
+          </div>
+        </div>
+
+        <div class="header-right">
+          <div class="status-indicator">
+            <span class={`status-dot ${status()}`} />
+            <span class="status-text">{status()}</span>
+          </div>
+          <div class="header-divider" />
+          <div class="token-count">
+            <span class="token-label">tokens</span>
+            <span class="token-value">{formatTokens(tokens().input + tokens().output)}</span>
+          </div>
         </div>
       </header>
 

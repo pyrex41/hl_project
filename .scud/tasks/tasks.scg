@@ -3,14 +3,12 @@
 
 @meta {
   name init
-  updated 2025-12-04T23:25:19.992007+00:00
+  updated 2025-12-05T00:38:49.556117+00:00
 }
 
 @nodes
 # id | title | status | complexity | priority
 1 | Set up project scaffold with Bun, Hono, Vite, and Solid.js | P | 2 | H
-4.5 | Add unit tests for tool functions | P | 1 | M
-10.5 | Write README with architecture and AI methodology | P | 1 | H
 2 | Define minimal system prompt and tool definitions | P | 1 | H
 2.1 | Add CLAUDE.md/AGENTS.md project instructions loader | P | 0 | H
 2.2 | Implement slash commands support | P | 0 | M
@@ -24,6 +22,7 @@
 4.2 | Implement write_file function | P | 0 | H
 4.3 | Implement edit_file function | P | 0 | H
 4.4 | Implement bash function | P | 0 | H
+4.5 | Add unit tests for tool functions | P | 1 | M
 5 | Set up SSE endpoint for streaming events | X | 3 | H
 5.1 | Define event schemas for agent events | P | 0 | H
 5.2 | Implement SSE endpoint in Hono | P | 0 | H
@@ -34,12 +33,16 @@
 6.3 | Display tool calls as indented blocks with status | P | 0 | H
 6.4 | Add syntax highlighting and visual diffs | P | 0 | M
 7 | Add status bar and observability features | P | 2 | M
-11 | Agent execution DAG visualization (stretch) | P | 3 | L
 10 | Implement session persistence and final polish | X | 5 | M
 10.1 | Define conversation data schema | P | 0 | H
 10.2 | Implement save and load functions | P | 0 | H
 10.3 | Integrate save/load UI and error handling | P | 0 | M
 10.4 | Final polish and documentation | P | 0 | L
+10.5 | Write README with architecture and AI methodology | P | 1 | H
+11 | Agent execution DAG visualization (stretch) | X | 3 | L
+11.1 | Define DAG Node Models and Schemas | P | 0 | H
+11.2 | Implement DAG Data Collection Logic | P | 0 | H
+11.3 | Create Collapsible Tree/Graph UI Visualization | P | 0 | M
 
 @edges
 # dependent -> dependency
@@ -51,6 +54,7 @@
 3.2 -> 3.1
 3.3 -> 3.2
 4 -> 3
+4.5 -> 4.4
 5 -> 4
 5.2 -> 5.1
 5.3 -> 5.2
@@ -60,12 +64,13 @@
 6.4 -> 6.3
 7 -> 6
 10 -> 7
-11 -> 7
 10.2 -> 10.1
 10.3 -> 10.2
 10.4 -> 10.3
-4.5 -> 4.4
 10.5 -> 10.4
+11 -> 7
+11.2 -> 11.1
+11.3 -> 11.2
 
 @parents
 # parent: subtasks...
@@ -74,6 +79,7 @@
 5: 5.1, 5.2, 5.3
 6: 6.1, 6.2, 6.3, 6.4
 10: 10.1, 10.2, 10.3, 10.4, 10.5
+11: 11.1, 11.2, 11.3
 
 @details
 1 | description |
@@ -104,6 +110,8 @@
   Create the edit_file function using robust search/replace with context matching (not naive string replace). Include: fuzzy matching for whitespace differences, line-number-based fallback, clear diff output showing before/after, and helpful errors when match not found (show similar lines).
 4.4 | description |
   Create the bash function with: configurable timeout (default 30s), working directory support, streaming stdout/stderr, proper signal handling (SIGTERM/SIGKILL), output truncation for large results, and exit code reporting. Separate stdout and stderr in response.
+4.5 | description |
+  Write unit tests for all 4 tool functions using Bun's test runner. Cover: happy paths, error cases (file not found, permission denied, timeout), edge cases (empty files, large outputs, special characters). Aim for >80% coverage on tool functions.
 5 | description |
   Configure Hono to serve an SSE endpoint that streams agent events (text_delta, tool_start, etc.) to the frontend. Integrate with the agent loop. Success: Frontend can receive real-time events from a test agent call.
 5.1 | description |
@@ -124,8 +132,6 @@
   Add syntax highlighting for code in tool outputs (lightweight - Prism or highlight.js) and visual diffs for edit_file results using simple `- old` / `+ new` line prefixes with color. Keep it terminal-aesthetic.
 7 | description |
   Add a minimal status bar showing: token count (input/output), session duration, agent status (idle/thinking/executing). Show retry countdown during rate limits. Optional: dangerous command preview before bash execution.
-11 | description |
-  STRETCH GOAL: Agent execution DAG visualization. Show a collapsible tree/graph view of the agent's execution: user message → LLM call → tool calls → results → next LLM call. Each node shows: type, timing, token usage, expandable content. Useful for debugging and observability. Could be a slide-out panel or separate route.
 10 | description |
   Add functionality to save/load conversations as JSON files. Perform final error handling, styling, and write a README. Success: Sessions can be saved/reloaded, and the app is demo-ready with no obvious bugs.
 10.1 | description |
@@ -136,7 +142,13 @@
   Add UI elements (e.g., buttons or menus) for saving and loading sessions, and implement error handling for file operations and invalid data.
 10.4 | description |
   Apply final styling improvements, fix any remaining bugs, and perform manual testing for demo readiness. Ensure all features work end-to-end: streaming, tool calls, session save/load.
-4.5 | description |
-  Write unit tests for all 4 tool functions using Bun's test runner. Cover: happy paths, error cases (file not found, permission denied, timeout), edge cases (empty files, large outputs, special characters). Aim for >80% coverage on tool functions.
 10.5 | description |
   Write comprehensive README covering: project overview, tech stack choices and rationale, architecture diagram (ASCII or mermaid), setup instructions with API key config, usage examples, and a dedicated section on AI methodology (which coding agents were used, prompting approach, iteration process). This section is explicitly required by the assessment.
+11 | description |
+  STRETCH GOAL: Agent execution DAG visualization. Show a collapsible tree/graph view of the agent's execution: user message → LLM call → tool calls → results → next LLM call. Each node shows: type, timing, token usage, expandable content. Useful for debugging and observability. Could be a slide-out panel or separate route.
+11.1 | description |
+  Create data models and schemas for DAG nodes, including fields for type (e.g., user message, LLM call, tool call), timing, token usage, and expandable content. Ensure the structure supports hierarchical relationships for the execution flow.
+11.2 | description |
+  Build logic to collect and structure agent execution data into a DAG format during runtime, capturing the sequence of user message → LLM call → tool calls → results → next LLM call, and populate node details with timing and token usage.
+11.3 | description |
+  Develop a UI component (e.g., slide-out panel or separate route) that renders the DAG as a collapsible tree or graph view, displaying node details and allowing expansion of content for debugging and observability.
