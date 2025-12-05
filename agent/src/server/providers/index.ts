@@ -53,11 +53,11 @@ function isValidProvider(name: string): name is ProviderName {
 function getDefaultModel(provider: ProviderName): string {
   switch (provider) {
     case 'anthropic':
-      return process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250514'
+      return process.env.ANTHROPIC_MODEL || 'claude-opus-4-20250514'
     case 'xai':
-      return process.env.XAI_MODEL || 'grok-4-0125'
+      return process.env.XAI_MODEL || 'grok-4-1-fast-reasoning'
     case 'openai':
-      return process.env.OPENAI_MODEL || 'gpt-4.1'
+      return process.env.OPENAI_MODEL || 'gpt-5.1-max-high'
   }
 }
 

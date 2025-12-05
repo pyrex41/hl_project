@@ -10,7 +10,7 @@ export class AnthropicProvider implements LLMProvider {
     this.client = new Anthropic({
       apiKey: apiKey || process.env.ANTHROPIC_API_KEY
     })
-    this.model = model || process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250514'
+    this.model = model || process.env.ANTHROPIC_MODEL || 'claude-opus-4-20250514'
   }
 
   async listModels(): Promise<ModelInfo[]> {
@@ -25,8 +25,8 @@ export class AnthropicProvider implements LLMProvider {
       console.error('Failed to list Anthropic models:', error)
       // Return known models as fallback (best/latest first)
       return [
-        { id: 'claude-sonnet-4-5-20250514', name: 'Claude Sonnet 4.5' },
         { id: 'claude-opus-4-20250514', name: 'Claude Opus 4' },
+        { id: 'claude-sonnet-4-5-20250514', name: 'Claude Sonnet 4.5' },
         { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
         { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet' },
         { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku' },

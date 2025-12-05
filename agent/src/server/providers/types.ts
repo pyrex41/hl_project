@@ -11,15 +11,15 @@ export interface ProviderConfig {
 // Supported providers and their default models (best/latest)
 export const PROVIDER_DEFAULTS: Record<ProviderName, { model: string; envKey: string }> = {
   anthropic: {
-    model: 'claude-sonnet-4-5-20250514',
+    model: 'claude-opus-4-20250514',
     envKey: 'ANTHROPIC_API_KEY'
   },
   xai: {
-    model: 'grok-4-0125',
+    model: 'grok-4-1-fast-reasoning',
     envKey: 'XAI_API_KEY'
   },
   openai: {
-    model: 'gpt-4.1',
+    model: 'gpt-5.1-max-high',
     envKey: 'OPENAI_API_KEY'
   }
 }
