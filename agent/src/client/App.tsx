@@ -100,9 +100,247 @@ interface FullConfig {
 
 type AgentStatus = 'idle' | 'thinking' | 'executing' | 'error' | 'awaiting_confirmation'
 
+// Graph view types
+type GraphNodeType = 'user' | 'assistant' | 'tool' | 'subagent-root' | 'subagent-message'
+
+interface GraphNode {
+  id: string
+  type: GraphNodeType
+  // Position (computed by layout)
+  x: number
+  y: number
+  // Content
+  label: string           // Short display text
+  content?: string        // Full content for detail view
+  toolCall?: ToolCall     // If type === 'tool'
+  subagentResult?: SubagentResult  // If type === 'subagent-root'
+  message?: Message       // Original message
+  // Tree structure
+  children: GraphNode[]
+  parent?: GraphNode
+  // State
+  expanded: boolean       // For subagent branches
+  isLive: boolean         // Currently being updated
+}
+
+// Graph layout constants
+const GRAPH_LAYOUT = {
+  nodeWidth: 200,
+  nodeHeight: 60,
+  toolNodeHeight: 36,
+  horizontalGap: 40,
+  verticalGap: 30,
+  branchIndent: 60,
+  padding: 40
+}
+
 interface TokenUsage {
   input: number
   output: number
+}
+
+// Graph View Component
+function GraphView(props: {
+  nodes: GraphNode[]
+  selectedNode: GraphNode | null
+  onSelectNode: (node: GraphNode | null) => void
+  onToggleExpand: (nodeId: string) => void
+  containerRef?: (el: HTMLDivElement) => void
+}) {
+  // Compute SVG dimensions
+  const dimensions = () => {
+    let maxX = 800
+    let maxY = 600
+    const visit = (node: GraphNode) => {
+      maxX = Math.max(maxX, node.x + GRAPH_LAYOUT.nodeWidth + GRAPH_LAYOUT.padding)
+      maxY = Math.max(maxY, node.y + (node.type === 'tool' ? GRAPH_LAYOUT.toolNodeHeight : GRAPH_LAYOUT.nodeHeight) + GRAPH_LAYOUT.padding)
+      if (node.expanded) {
+        node.children.forEach(visit)
+      }
+    }
+    props.nodes.forEach(visit)
+    return { width: maxX, height: maxY }
+  }
+
+  // Render connection lines
+  const renderEdges = (node: GraphNode): Element[] => {
+    const edges: Element[] = []
+    if (node.expanded && node.children.length > 0) {
+      const nodeHeight = node.type === 'tool' ? GRAPH_LAYOUT.toolNodeHeight : GRAPH_LAYOUT.nodeHeight
+      const startX = node.x + GRAPH_LAYOUT.nodeWidth / 2
+      const startY = node.y + nodeHeight
+
+      for (const child of node.children) {
+        const endX = child.x + GRAPH_LAYOUT.nodeWidth / 2
+        const endY = child.y
+
+        // Curved path
+        const midY = (startY + endY) / 2
+        const path = `M ${startX} ${startY} C ${startX} ${midY}, ${endX} ${midY}, ${endX} ${endY}`
+
+        const edgeClass = child.type === 'tool'
+          ? 'graph-edge graph-edge-tool'
+          : child.type.startsWith('subagent')
+          ? 'graph-edge graph-edge-subagent'
+          : 'graph-edge'
+
+        edges.push(<path class={`${edgeClass} ${child.isLive ? 'live' : ''}`} d={path} />)
+
+        // Recurse for children
+        edges.push(...renderEdges(child))
+      }
+    }
+    return edges
+  }
+
+  // Render a single node
+  const renderNode = (node: GraphNode): Element => {
+    const isToolNode = node.type === 'tool'
+    const nodeHeight = isToolNode ? GRAPH_LAYOUT.toolNodeHeight : GRAPH_LAYOUT.nodeHeight
+    const isSelected = props.selectedNode?.id === node.id
+    const hasChildren = node.children.length > 0 || (node.type === 'subagent-root' && node.subagentResult?.fullHistory?.length)
+    const isSubagentRoot = node.type === 'subagent-root'
+
+    return (
+      <g
+        class={`graph-node graph-node-${node.type} ${node.isLive ? 'live' : ''} ${isSelected ? 'selected' : ''}`}
+        transform={`translate(${node.x}, ${node.y})`}
+        onClick={(e: MouseEvent) => {
+          e.stopPropagation()
+          props.onSelectNode(node)
+        }}
+      >
+        {/* Node rectangle */}
+        <rect
+          class="graph-node-rect"
+          width={GRAPH_LAYOUT.nodeWidth}
+          height={nodeHeight}
+        />
+
+        {/* Node label */}
+        <text
+          class="graph-node-label"
+          x={isSubagentRoot ? 30 : 12}
+          y={nodeHeight / 2 + 4}
+        >
+          {node.label.slice(0, 28)}{node.label.length > 28 ? '...' : ''}
+        </text>
+
+        {/* Expand/collapse button for subagents */}
+        <Show when={isSubagentRoot && hasChildren}>
+          <g
+            class="graph-expand-btn"
+            transform={`translate(8, ${nodeHeight / 2 - 8})`}
+            onClick={(e: MouseEvent) => {
+              e.stopPropagation()
+              props.onToggleExpand(node.subagentResult!.taskId)
+            }}
+          >
+            <rect width="16" height="16" rx="3" />
+            <text class="graph-expand-icon" x="5" y="12">
+              {node.expanded ? '−' : '+'}
+            </text>
+          </g>
+        </Show>
+
+        {/* Live indicator */}
+        <Show when={node.isLive}>
+          <circle cx={GRAPH_LAYOUT.nodeWidth - 12} cy={12} r={4} fill="var(--yellow)">
+            <animate attributeName="opacity" values="1;0.4;1" dur="1.5s" repeatCount="indefinite" />
+          </circle>
+        </Show>
+      </g>
+    )
+  }
+
+  // Collect all nodes for rendering (flatten tree for separate rendering)
+  const collectAllNodes = (nodes: GraphNode[]): GraphNode[] => {
+    const result: GraphNode[] = []
+    const visit = (node: GraphNode) => {
+      result.push(node)
+      if (node.expanded) {
+        node.children.forEach(visit)
+      }
+    }
+    nodes.forEach(visit)
+    return result
+  }
+
+  return (
+    <div
+      class="graph-view-container"
+      ref={props.containerRef}
+      onClick={() => props.onSelectNode(null)}
+    >
+      <svg class="graph-svg" width={dimensions().width} height={dimensions().height}>
+        {/* Render edges first (behind nodes) */}
+        <g class="graph-edges">
+          <For each={props.nodes}>
+            {(node) => renderEdges(node)}
+          </For>
+        </g>
+
+        {/* Render nodes */}
+        <g class="graph-nodes">
+          <For each={collectAllNodes(props.nodes)}>
+            {(node) => renderNode(node)}
+          </For>
+        </g>
+      </svg>
+    </div>
+  )
+}
+
+// Node Detail Popup
+function GraphNodeDetail(props: {
+  node: GraphNode
+  onClose: () => void
+}) {
+  const typeLabel = () => {
+    switch (props.node.type) {
+      case 'user': return 'User Message'
+      case 'assistant': return 'Assistant'
+      case 'tool': return `Tool: ${props.node.toolCall?.name}`
+      case 'subagent-root': return `Subagent (${props.node.subagentResult?.task.role})`
+      case 'subagent-message': return 'Subagent Message'
+      default: return props.node.type
+    }
+  }
+
+  const typeClass = () => {
+    if (props.node.type === 'user') return 'user'
+    if (props.node.type === 'assistant' || props.node.type === 'subagent-message') return 'assistant'
+    if (props.node.type === 'tool') return 'tool'
+    if (props.node.type === 'subagent-root') return 'subagent'
+    return ''
+  }
+
+  const content = () => {
+    if (props.node.type === 'tool' && props.node.toolCall) {
+      const tool = props.node.toolCall
+      return `Input:\n${formatToolInput(tool.name, tool.input)}\n\nOutput:\n${tool.output || '(no output)'}`
+    }
+    if (props.node.type === 'subagent-root' && props.node.subagentResult) {
+      const sa = props.node.subagentResult
+      return `Task: ${sa.task.description}\n\nStatus: ${sa.status}\n\nSummary:\n${sa.summary || '(running...)'}`
+    }
+    return props.node.content || props.node.label
+  }
+
+  return (
+    <div class="graph-node-detail" style={{ top: '100px', left: '50%', transform: 'translateX(-50%)' }} onClick={(e) => e.stopPropagation()}>
+      <button class="graph-node-detail-close" onClick={props.onClose}>×</button>
+      <div class="graph-node-detail-header">
+        <span class={`graph-node-detail-type ${typeClass()}`}>{typeLabel()}</span>
+        <Show when={props.node.isLive}>
+          <span class="subagent-window-status running"><span class="spinner" /> Live</span>
+        </Show>
+      </div>
+      <div class="graph-node-detail-content">
+        {content()}
+      </div>
+    </div>
+  )
 }
 
 function App() {
@@ -134,7 +372,13 @@ function App() {
   const [savingConfig, setSavingConfig] = createSignal(false)
   // Per-provider models cache for settings
   const [settingsModels, setSettingsModels] = createSignal<Record<string, ModelInfo[]>>({})
+  // Graph view state
+  const [showGraphView, setShowGraphView] = createSignal(false)
+  const [graphNodes, setGraphNodes] = createSignal<GraphNode[]>([])
+  const [selectedGraphNode, setSelectedGraphNode] = createSignal<GraphNode | null>(null)
+  const [expandedSubagents, setExpandedSubagents] = createSignal<Set<string>>(new Set())
   let messagesEndRef: HTMLDivElement | undefined
+  let graphContainerRef: HTMLDivElement | undefined
 
   // Load sessions and providers on mount
   onMount(async () => {
@@ -951,6 +1195,239 @@ function App() {
     return classes[role] || ''
   }
 
+  // Compute tree layout positions
+  const computeLayout = (nodes: GraphNode[]): { nodes: GraphNode[]; width: number; height: number } => {
+    let currentY = GRAPH_LAYOUT.padding
+    const maxX = { value: 0 }
+
+    const layoutNode = (node: GraphNode, depth: number, offsetX: number): number => {
+      const isToolNode = node.type === 'tool'
+      const nodeHeight = isToolNode ? GRAPH_LAYOUT.toolNodeHeight : GRAPH_LAYOUT.nodeHeight
+
+      node.x = offsetX + depth * GRAPH_LAYOUT.branchIndent
+      node.y = currentY
+      currentY += nodeHeight + GRAPH_LAYOUT.verticalGap
+
+      maxX.value = Math.max(maxX.value, node.x + GRAPH_LAYOUT.nodeWidth)
+
+      // Layout children
+      if (node.expanded && node.children.length > 0) {
+        for (const child of node.children) {
+          layoutNode(child, depth + 1, offsetX)
+        }
+      }
+
+      return node.y
+    }
+
+    // Layout all root nodes
+    for (const node of nodes) {
+      layoutNode(node, 0, GRAPH_LAYOUT.padding)
+    }
+
+    return {
+      nodes,
+      width: maxX.value + GRAPH_LAYOUT.padding,
+      height: currentY + GRAPH_LAYOUT.padding
+    }
+  }
+
+  // Build subagent node helper
+  const buildSubagentNode = (subagent: SubagentResult, baseId: number): GraphNode => {
+    const isExpanded = expandedSubagents().has(subagent.taskId)
+
+    const node: GraphNode = {
+      id: `subagent-${subagent.taskId}`,
+      type: 'subagent-root',
+      x: 0, y: 0,
+      label: `${subagent.task.role}: ${subagent.task.description.slice(0, 30)}...`,
+      subagentResult: subagent,
+      children: [],
+      expanded: isExpanded,
+      isLive: subagent.status === 'running'
+    }
+
+    // If expanded, add child nodes for subagent's history
+    if (isExpanded && subagent.fullHistory) {
+      let childId = 0
+      for (const msg of subagent.fullHistory) {
+        const childNode: GraphNode = {
+          id: `${node.id}-msg-${childId++}`,
+          type: 'subagent-message',
+          x: 0, y: 0,
+          label: msg.content.slice(0, 40) + (msg.content.length > 40 ? '...' : ''),
+          content: msg.content,
+          message: msg,
+          children: [],
+          parent: node,
+          expanded: true,
+          isLive: false
+        }
+
+        // Add tool calls for subagent messages
+        if (msg.toolCalls) {
+          for (const tool of msg.toolCalls) {
+            childNode.children.push({
+              id: `${childNode.id}-tool-${tool.id}`,
+              type: 'tool',
+              x: 0, y: 0,
+              label: tool.name,
+              toolCall: tool,
+              children: [],
+              parent: childNode,
+              expanded: true,
+              isLive: false
+            })
+          }
+        }
+
+        node.children.push(childNode)
+      }
+    }
+
+    return node
+  }
+
+  // Build graph nodes from messages and subagents
+  const buildGraphNodes = (): GraphNode[] => {
+    const nodes: GraphNode[] = []
+    let nodeId = 0
+
+    // Process main conversation messages
+    for (const msg of messages()) {
+      const msgNode: GraphNode = {
+        id: `msg-${nodeId++}`,
+        type: msg.role === 'user' ? 'user' : 'assistant',
+        x: 0, y: 0, // Layout computed later
+        label: msg.content.slice(0, 50) + (msg.content.length > 50 ? '...' : ''),
+        content: msg.content,
+        message: msg,
+        children: [],
+        expanded: true,
+        isLive: false
+      }
+
+      // Add tool calls as children
+      if (msg.toolCalls) {
+        for (const tool of msg.toolCalls) {
+          const toolNode: GraphNode = {
+            id: `tool-${tool.id}`,
+            type: 'tool',
+            x: 0, y: 0,
+            label: tool.name,
+            toolCall: tool,
+            children: [],
+            parent: msgNode,
+            expanded: true,
+            isLive: tool.status === 'running' || tool.status === 'pending'
+          }
+
+          // Check if this tool spawned subagents
+          if (tool.name === 'task' && tool.details?.type === 'subagent') {
+            // Link to subagent results
+            const subagentData = tool.details.data as { taskId: string }
+            const subagent = completedSubagents().find(s => s.taskId === subagentData.taskId)
+              || Array.from(runningSubagents().values()).find(s => s.taskId === subagentData.taskId)
+
+            if (subagent) {
+              const subagentNode = buildSubagentNode(subagent, nodeId++)
+              subagentNode.parent = toolNode
+              toolNode.children.push(subagentNode)
+            }
+          }
+
+          msgNode.children.push(toolNode)
+        }
+      }
+
+      nodes.push(msgNode)
+    }
+
+    // Add currently streaming content as live nodes
+    if (currentAssistant()) {
+      const liveNode: GraphNode = {
+        id: 'current-assistant',
+        type: 'assistant',
+        x: 0, y: 0,
+        label: currentAssistant().slice(0, 50) + '...',
+        content: currentAssistant(),
+        children: [],
+        expanded: true,
+        isLive: true
+      }
+
+      // Add current tools as children
+      for (const tool of currentTools().values()) {
+        liveNode.children.push({
+          id: `current-tool-${tool.id}`,
+          type: 'tool',
+          x: 0, y: 0,
+          label: tool.name,
+          toolCall: tool,
+          children: [],
+          parent: liveNode,
+          expanded: true,
+          isLive: tool.status === 'running' || tool.status === 'pending'
+        })
+      }
+
+      nodes.push(liveNode)
+    }
+
+    // Add running subagents that aren't linked to tool calls yet
+    for (const subagent of runningSubagents().values()) {
+      const existing = nodes.some(n =>
+        n.children.some(c =>
+          c.children.some(sc => sc.id === `subagent-${subagent.taskId}`)
+        )
+      )
+      if (!existing) {
+        nodes.push(buildSubagentNode(subagent, nodeId++))
+      }
+    }
+
+    // Compute layout
+    const { nodes: layoutNodes } = computeLayout(nodes)
+    return layoutNodes
+  }
+
+  // Rebuild graph when conversation changes
+  createEffect(() => {
+    if (showGraphView()) {
+      // Trigger rebuild by accessing reactive dependencies
+      messages()
+      currentAssistant()
+      currentTools()
+      runningSubagents()
+      completedSubagents()
+      expandedSubagents()
+
+      setGraphNodes(buildGraphNodes())
+    }
+  })
+
+  // Auto-scroll to latest node in graph view
+  createEffect(() => {
+    if (showGraphView() && graphContainerRef) {
+      const nodes = graphNodes()
+      if (nodes.length > 0) {
+        // Find the node with highest Y position
+        let maxY = 0
+        const findMaxY = (n: GraphNode) => {
+          maxY = Math.max(maxY, n.y)
+          if (n.expanded) n.children.forEach(findMaxY)
+        }
+        nodes.forEach(findMaxY)
+
+        // Scroll to show it
+        graphContainerRef.scrollTo({
+          top: Math.max(0, maxY - graphContainerRef.clientHeight + 150),
+          behavior: 'smooth'
+        })
+      }
+    }
+  })
+
   return (
     <>
       <header class="header">
@@ -978,6 +1455,15 @@ function App() {
             title="Settings"
           >
             <span class="btn-icon">⚙</span>
+          </button>
+          <div class="header-divider" />
+          <button
+            class={`view-toggle-btn ${showGraphView() ? 'active' : ''}`}
+            onClick={() => setShowGraphView(!showGraphView())}
+            title="Toggle Graph View"
+          >
+            <span>{showGraphView() ? '≡' : '◇'}</span>
+            <span>{showGraphView() ? 'List' : 'Graph'}</span>
           </button>
         </div>
 
@@ -1101,8 +1587,9 @@ function App() {
         </div>
       </Show>
 
-      <div class="messages">
-        <For each={messages()}>
+      <Show when={!showGraphView()}>
+        <div class="messages">
+          <For each={messages()}>
           {(msg) => (
             <div class="message">
               <Show when={msg.role === 'user'}>
@@ -1228,8 +1715,39 @@ function App() {
           </div>
         </Show>
 
-        <div ref={messagesEndRef} />
-      </div>
+          <div ref={messagesEndRef} />
+        </div>
+      </Show>
+
+      <Show when={showGraphView()}>
+        <GraphView
+          nodes={graphNodes()}
+          selectedNode={selectedGraphNode()}
+          onSelectNode={setSelectedGraphNode}
+          onToggleExpand={(taskId) => {
+            setExpandedSubagents(prev => {
+              const next = new Set(prev)
+              if (next.has(taskId)) {
+                next.delete(taskId)
+              } else {
+                next.add(taskId)
+              }
+              return next
+            })
+          }}
+          containerRef={(el) => { graphContainerRef = el }}
+        />
+
+        {/* Node detail popup */}
+        <Show when={selectedGraphNode()}>
+          {(node) => (
+            <GraphNodeDetail
+              node={node()}
+              onClose={() => setSelectedGraphNode(null)}
+            />
+          )}
+        </Show>
+      </Show>
 
       <div class="input-area">
         <div class="input-wrapper">
