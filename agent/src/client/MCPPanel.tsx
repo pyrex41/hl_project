@@ -179,9 +179,16 @@ export function MCPPanel(props: MCPPanelProps) {
   const deleteServer = async (serverId: string) => {
     if (!confirm('Are you sure you want to remove this MCP server?')) return
     try {
-      await fetch(`/api/mcp/servers/${serverId}?workingDir=${encodeURIComponent(props.workingDir)}`, {
+      console.log('Deleting server:', serverId, 'workingDir:', props.workingDir)
+      const res = await fetch(`/api/mcp/servers/${serverId}?workingDir=${encodeURIComponent(props.workingDir)}`, {
         method: 'DELETE'
       })
+      if (res.ok) {
+        console.log('Server deleted successfully')
+      } else {
+        const err = await res.json()
+        console.error('Delete failed:', err)
+      }
       await fetchData()
     } catch (e) {
       console.error('Failed to delete:', e)
@@ -284,42 +291,66 @@ export function MCPPanel(props: MCPPanelProps) {
   // Import selected servers
   const importSelected = async () => {
     const selected = selectedImports()
-    if (selected.size === 0) return
+    if (selected.size === 0) {
+      console.log('No servers selected for import')
+      return
+    }
 
     const sources = discoveredSources()
     let imported = 0
+    let skipped = 0
 
     for (const key of selected) {
-      const [sourceId, serverId] = key.split(':')
+      // Split only on first colon to handle server IDs that contain colons
+      const colonIndex = key.indexOf(':')
+      const sourceId = key.substring(0, colonIndex)
+      const serverId = key.substring(colonIndex + 1)
+
       const source = sources.find(s => s.source === sourceId)
       const server = source?.servers.find(s => s.id === serverId)
 
-      if (server && !serverExists(serverId)) {
-        try {
-          const res = await fetch('/api/mcp/servers', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              workingDir: props.workingDir,
-              server: {
-                ...server,
-                enabled: true,
-                autoConnect: true
-              }
-            })
+      if (!server) {
+        console.error('Server not found in sources:', sourceId, serverId)
+        continue
+      }
+
+      if (serverExists(serverId)) {
+        console.log('Server already exists, skipping:', serverId)
+        skipped++
+        continue
+      }
+
+      try {
+        const res = await fetch('/api/mcp/servers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            workingDir: props.workingDir,
+            server: {
+              ...server,
+              enabled: true,
+              autoConnect: true
+            }
           })
-          if (res.ok) imported++
-        } catch (e) {
-          console.error('Failed to import server:', serverId, e)
+        })
+        if (res.ok) {
+          console.log('Successfully imported server:', serverId)
+          imported++
+        } else {
+          const err = await res.json()
+          console.error('Failed to import server:', serverId, err)
         }
+      } catch (e) {
+        console.error('Failed to import server:', serverId, e)
       }
     }
 
-    if (imported > 0) {
-      await fetchData()
-      setShowImport(false)
-      setSelectedImports(new Set())
-    }
+    console.log(`Import complete: ${imported} imported, ${skipped} skipped`)
+
+    // Always refresh and close if we attempted imports
+    await fetchData()
+    setShowImport(false)
+    setSelectedImports(new Set())
   }
 
   // Status badge color
