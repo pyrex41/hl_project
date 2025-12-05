@@ -139,6 +139,12 @@ interface TokenUsage {
   output: number
 }
 
+interface SubagentTab {
+  id: string           // Unique tab ID (can reuse taskId)
+  taskId: string       // The subagent's task ID
+  title: string        // Tab title (truncated description)
+}
+
 // Graph View Component
 function GraphView(props: {
   nodes: GraphNode[]
@@ -377,7 +383,11 @@ function App() {
   const [graphNodes, setGraphNodes] = createSignal<GraphNode[]>([])
   const [selectedGraphNode, setSelectedGraphNode] = createSignal<GraphNode | null>(null)
   const [expandedSubagents, setExpandedSubagents] = createSignal<Set<string>>(new Set())
+  // Tab state
+  const [openTabs, setOpenTabs] = createSignal<SubagentTab[]>([])
+  const [activeTab, setActiveTab] = createSignal<string | null>(null) // null = main chat
   let messagesEndRef: HTMLDivElement | undefined
+  let subagentMessagesEndRef: HTMLDivElement | undefined
   let graphContainerRef: HTMLDivElement | undefined
 
   // Load sessions and providers on mount
@@ -1428,6 +1438,40 @@ function App() {
     }
   })
 
+  const openSubagentTab = (subagent: SubagentResult) => {
+    // Check if tab already exists
+    const existing = openTabs().find(t => t.taskId === subagent.taskId)
+    if (existing) {
+      setActiveTab(existing.id)
+      setExpandedSubagent(null)
+      return
+    }
+
+    // Create new tab
+    const newTab: SubagentTab = {
+      id: subagent.taskId,
+      taskId: subagent.taskId,
+      title: subagent.task.description.slice(0, 30) + (subagent.task.description.length > 30 ? '...' : '')
+    }
+    setOpenTabs(prev => [...prev, newTab])
+    setActiveTab(newTab.id)
+    setExpandedSubagent(null)
+  }
+
+  const closeTab = (tabId: string) => {
+    // Calculate remaining tabs BEFORE updating state to avoid race condition
+    const remaining = openTabs().filter(t => t.id !== tabId)
+    setOpenTabs(remaining)
+    // If we closed the active tab, switch to most recent remaining or main chat
+    if (activeTab() === tabId) {
+      if (remaining.length > 0) {
+        setActiveTab(remaining[remaining.length - 1].id)
+      } else {
+        setActiveTab(null)
+      }
+    }
+  }
+
   return (
     <>
       <header class="header">
@@ -1587,7 +1631,54 @@ function App() {
         </div>
       </Show>
 
-      <Show when={!showGraphView()}>
+      {/* Tab Bar - only show when there are open subagent tabs and not in graph view */}
+      <Show when={openTabs().length > 0 && !showGraphView()}>
+        <div class="tab-bar">
+          <button
+            class={`tab-item ${activeTab() === null ? 'active' : ''}`}
+            onClick={() => setActiveTab(null)}
+          >
+            <span class="tab-icon">◈</span>
+            <span class="tab-title">Main Chat</span>
+          </button>
+          <For each={openTabs()}>
+            {(tab) => {
+              // Get the current subagent state (could be running or completed)
+              const getSubagent = () => {
+                const running = runningSubagents().get(tab.taskId)
+                if (running) return running
+                return completedSubagents().find(s => s.taskId === tab.taskId)
+              }
+              return (
+                <div
+                  class={`tab-item ${activeTab() === tab.id ? 'active' : ''} ${getSubagent()?.status === 'running' ? 'running' : ''}`}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  <span class={`role-badge-mini ${getRoleBadgeClass(getSubagent()?.task.role || 'simple')}`}>
+                    {getSubagent()?.task.role?.charAt(0).toUpperCase() || 'S'}
+                  </span>
+                  <span class="tab-title">{tab.title}</span>
+                  <Show when={getSubagent()?.status === 'running'}>
+                    <span class="tab-spinner"><span class="spinner" /></span>
+                  </Show>
+                  <button
+                    class="tab-close"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      closeTab(tab.id)
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              )
+            }}
+          </For>
+        </div>
+      </Show>
+
+      {/* Main chat view - shown when not in graph view and no subagent tab is active */}
+      <Show when={!showGraphView() && activeTab() === null}>
         <div class="messages">
           <For each={messages()}>
           {(msg) => (
@@ -1719,6 +1810,132 @@ function App() {
         </div>
       </Show>
 
+      {/* Subagent tab view - shown when not in graph view and a subagent tab is active */}
+      <Show when={!showGraphView() && activeTab() !== null}>
+        {(() => {
+          const tab = openTabs().find(t => t.id === activeTab())
+          if (!tab) return null
+
+          // Get the subagent from running or completed
+          const subagent = () => {
+            const running = runningSubagents().get(tab.taskId)
+            if (running) return running
+            return completedSubagents().find(s => s.taskId === tab.taskId)
+          }
+
+          return (
+            <Show when={subagent()}>
+              {(sa) => (
+                <div class="subagent-tab-content">
+                  <div class="subagent-tab-header">
+                    <span class={`role-badge ${getRoleBadgeClass(sa().task.role)}`}>{sa().task.role}</span>
+                    <span class="subagent-tab-desc">{sa().task.description}</span>
+                    <Show when={sa().status === 'running'}>
+                      <span class="subagent-window-status running"><span class="spinner" /> Live</span>
+                    </Show>
+                    <Show when={sa().status === 'max_iterations'}>
+                      <span class="subagent-window-status max-iterations">Hit max iterations</span>
+                    </Show>
+                    <Show when={sa().status === 'completed'}>
+                      <span class="subagent-window-status completed">Completed</span>
+                    </Show>
+                    <Show when={sa().status === 'error'}>
+                      <span class="subagent-window-status error">Error</span>
+                    </Show>
+                  </div>
+                  <div class="subagent-tab-messages">
+                    {/* Full history */}
+                    <For each={sa().fullHistory}>
+                      {(msg) => (
+                        <div class="subagent-message">
+                          <Show when={msg.role === 'user'}>
+                            <div class="message-user">{msg.content}</div>
+                          </Show>
+                          <Show when={msg.role === 'assistant'}>
+                            <Show when={msg.toolCalls}>
+                              <For each={msg.toolCalls}>
+                                {(tool) => (
+                                  <div class="tool-call">
+                                    <div class="tool-header">
+                                      <span class="tool-name">{tool.name}</span>
+                                      <span class={`tool-status ${tool.status}`}>
+                                        {tool.status === 'done' && '✓'}
+                                        {tool.status === 'error' && '✗'}
+                                      </span>
+                                    </div>
+                                    <Show when={tool.input}>
+                                      <div class="tool-input">{formatToolInput(tool.name, tool.input)}</div>
+                                    </Show>
+                                    <Show when={tool.output}>
+                                      <div class="tool-output">{tool.output}</div>
+                                    </Show>
+                                  </div>
+                                )}
+                              </For>
+                            </Show>
+                            <Show when={msg.content}>
+                              <div class="message-assistant">{msg.content}</div>
+                            </Show>
+                          </Show>
+                        </div>
+                      )}
+                    </For>
+
+                    {/* Live progress for running subagents */}
+                    <Show when={sa().status === 'running'}>
+                      <div class="subagent-live-progress">
+                        <Show when={sa().currentTools?.size}>
+                          <For each={Array.from(sa().currentTools!.values())}>
+                            {(tool) => (
+                              <div class="tool-call">
+                                <div class="tool-header">
+                                  <span class="tool-name">{tool.name}</span>
+                                  <span class={`tool-status ${tool.status}`}>
+                                    {(tool.status === 'pending' || tool.status === 'running') && <span class="spinner" />}
+                                    {tool.status === 'done' && '✓'}
+                                    {tool.status === 'error' && '✗'}
+                                    {tool.status}
+                                  </span>
+                                </div>
+                                <Show when={tool.input}>
+                                  <div class="tool-input">{formatToolInput(tool.name, tool.input)}</div>
+                                </Show>
+                                <Show when={tool.output}>
+                                  <div class="tool-output">{tool.output}</div>
+                                </Show>
+                              </div>
+                            )}
+                          </For>
+                        </Show>
+                        <Show when={sa().currentText}>
+                          <div class="message-assistant">{sa().currentText}</div>
+                        </Show>
+                      </div>
+                    </Show>
+                    <div ref={subagentMessagesEndRef} />
+                  </div>
+
+                  {/* Footer with Continue button for max_iterations */}
+                  <Show when={sa().status === 'max_iterations'}>
+                    <div class="subagent-tab-footer">
+                      <span class="max-iterations-info">
+                        Subagent hit max iterations ({sa().iterations}). You can continue running it.
+                      </span>
+                      <button
+                        class="dialog-btn confirm"
+                        onClick={() => continueSubagent(sa())}
+                      >
+                        Continue
+                      </button>
+                    </div>
+                  </Show>
+                </div>
+              )}
+            </Show>
+          )
+        })()}
+      </Show>
+
       <Show when={showGraphView()}>
         <GraphView
           nodes={graphNodes()}
@@ -1841,6 +2058,14 @@ function App() {
                 <Show when={subagent().status === 'max_iterations'}>
                   <span class="subagent-window-status max-iterations">Hit max iterations</span>
                 </Show>
+                <button
+                  class="open-tab-btn"
+                  onClick={() => openSubagentTab(subagent())}
+                  title="Open in dedicated tab"
+                >
+                  <span class="btn-icon">⧉</span>
+                  Open in Tab
+                </button>
                 <button class="close-btn" onClick={() => setExpandedSubagent(null)}>×</button>
               </div>
               <div class="subagent-window-content">
@@ -1864,7 +2089,7 @@ function App() {
                                   </span>
                                 </div>
                                 <Show when={tool.input}>
-                                  <div class="tool-input">{formatToolInput(tool.name, typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input))}</div>
+                                  <div class="tool-input">{formatToolInput(tool.name, tool.input)}</div>
                                 </Show>
                                 <Show when={tool.output}>
                                   <div class="tool-output">{tool.output}</div>
@@ -1884,7 +2109,7 @@ function App() {
                 {/* Live progress for running subagents */}
                 <Show when={subagent().status === 'running'}>
                   <div class="subagent-live-progress">
-                    <Show when={subagent().currentTools && subagent().currentTools!.size > 0}>
+                    <Show when={subagent().currentTools?.size}>
                       <For each={Array.from(subagent().currentTools!.values())}>
                         {(tool) => (
                           <div class="tool-call">
@@ -2183,9 +2408,11 @@ function App() {
 }
 
 // Helper to format tool input for display
-function formatToolInput(name: string, input: string): string {
+function formatToolInput(name: string, input: string | unknown): string {
+  // Handle non-string input (can come from fullHistory)
+  const inputStr = typeof input === 'string' ? input : JSON.stringify(input)
   try {
-    const parsed = JSON.parse(input)
+    const parsed = JSON.parse(inputStr)
     switch (name) {
       case 'read_file':
         return parsed.path + (parsed.offset ? `:${parsed.offset}` : '') + (parsed.limit ? `-${parsed.limit}` : '')
@@ -2199,7 +2426,7 @@ function formatToolInput(name: string, input: string): string {
         return JSON.stringify(parsed, null, 2)
     }
   } catch {
-    return input
+    return inputStr
   }
 }
 

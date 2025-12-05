@@ -1384,3 +1384,190 @@ body {
   background: var(--bg-tertiary);
   color: var(--text);
 }
+
+/* Tab Bar */
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  min-height: 36px;
+}
+
+.tab-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+.tab-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text);
+}
+
+.tab-item.active {
+  background: var(--bg-tertiary);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.tab-item.running {
+  border-color: var(--yellow);
+}
+
+.tab-icon {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+}
+
+.tab-spinner {
+  display: flex;
+  align-items: center;
+}
+
+.tab-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 14px;
+  cursor: pointer;
+  margin-left: 4px;
+  transition: all 0.1s ease;
+}
+
+.tab-close:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.role-badge-mini {
+  font-size: 9px;
+  font-weight: 700;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+}
+
+.role-badge-mini.role-badge-simple {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--green);
+}
+
+.role-badge-mini.role-badge-complex {
+  background: rgba(163, 113, 247, 0.15);
+  color: var(--purple);
+}
+
+.role-badge-mini.role-badge-researcher {
+  background: rgba(88, 166, 255, 0.15);
+  color: var(--accent);
+}
+
+/* Subagent Tab Content */
+.subagent-tab-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.subagent-tab-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.subagent-tab-desc {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.subagent-tab-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.subagent-tab-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.subagent-window-status.completed {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--green);
+}
+
+.subagent-window-status.error {
+  background: rgba(248, 81, 73, 0.15);
+  color: var(--red);
+}
+
+/* Open in Tab Button */
+.open-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.open-tab-btn:hover {
+  background: var(--bg);
+  color: var(--text);
+  border-color: var(--accent-dim);
+}
+
+.open-tab-btn .btn-icon {
+  font-size: 12px;
+}
