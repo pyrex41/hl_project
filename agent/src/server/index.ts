@@ -211,6 +211,7 @@ app.post('/api/sessions', async (c) => {
   const body = await c.req.json()
   const workingDir: string = body.workingDir || process.cwd()
   const session = await createSession(workingDir)
+  await saveSession(session)
   return c.json({ session })
 })
 
