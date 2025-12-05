@@ -2089,7 +2089,7 @@ function App() {
                                   </span>
                                 </div>
                                 <Show when={tool.input}>
-                                  <div class="tool-input">{formatToolInput(tool.name, typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input))}</div>
+                                  <div class="tool-input">{formatToolInput(tool.name, tool.input)}</div>
                                 </Show>
                                 <Show when={tool.output}>
                                   <div class="tool-output">{tool.output}</div>
@@ -2109,7 +2109,7 @@ function App() {
                 {/* Live progress for running subagents */}
                 <Show when={subagent().status === 'running'}>
                   <div class="subagent-live-progress">
-                    <Show when={subagent().currentTools && subagent().currentTools!.size > 0}>
+                    <Show when={subagent().currentTools?.size}>
                       <For each={Array.from(subagent().currentTools!.values())}>
                         {(tool) => (
                           <div class="tool-call">
@@ -2408,9 +2408,11 @@ function App() {
 }
 
 // Helper to format tool input for display
-function formatToolInput(name: string, input: string): string {
+function formatToolInput(name: string, input: string | unknown): string {
+  // Handle non-string input (can come from fullHistory)
+  const inputStr = typeof input === 'string' ? input : JSON.stringify(input)
   try {
-    const parsed = JSON.parse(input)
+    const parsed = JSON.parse(inputStr)
     switch (name) {
       case 'read_file':
         return parsed.path + (parsed.offset ? `:${parsed.offset}` : '') + (parsed.limit ? `-${parsed.limit}` : '')
@@ -2424,7 +2426,7 @@ function formatToolInput(name: string, input: string): string {
         return JSON.stringify(parsed, null, 2)
     }
   } catch {
-    return input
+    return inputStr
   }
 }
 
