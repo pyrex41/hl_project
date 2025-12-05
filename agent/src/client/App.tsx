@@ -39,7 +39,47 @@ interface ModelInfo {
   contextWindow?: number
 }
 
-type AgentStatus = 'idle' | 'thinking' | 'executing' | 'error'
+// Subagent types
+type SubagentRole = 'simple' | 'complex' | 'researcher'
+
+interface SubagentTask {
+  id: string
+  description: string
+  role: SubagentRole
+  context?: string
+  provider?: string
+  model?: string
+}
+
+interface SubagentResult {
+  taskId: string
+  task: SubagentTask
+  summary: string
+  fullHistory: Message[]
+  status: 'running' | 'completed' | 'error' | 'cancelled'
+  error?: string
+}
+
+interface PendingConfirmation {
+  requestId: string
+  tasks: SubagentTask[]
+}
+
+// Subagent configuration types
+interface RoleConfig {
+  provider: string
+  model: string
+  maxIterations: number
+}
+
+interface SubagentConfig {
+  confirmMode: 'always' | 'never' | 'multiple'
+  timeout: number
+  maxConcurrent: number
+  roles: Record<SubagentRole, RoleConfig>
+}
+
+type AgentStatus = 'idle' | 'thinking' | 'executing' | 'error' | 'awaiting_confirmation'
 
 interface TokenUsage {
   input: number
@@ -63,11 +103,23 @@ function App() {
   const [showProviders, setShowProviders] = createSignal(false)
   const [showModels, setShowModels] = createSignal(false)
   const [loadingModels, setLoadingModels] = createSignal(false)
+  // Subagent state
+  const [pendingConfirmation, setPendingConfirmation] = createSignal<PendingConfirmation | null>(null)
+  const [runningSubagents, setRunningSubagents] = createSignal<Map<string, SubagentResult>>(new Map())
+  const [completedSubagents, setCompletedSubagents] = createSignal<SubagentResult[]>([])
+  const [expandedSubagent, setExpandedSubagent] = createSignal<SubagentResult | null>(null)
+  // Settings state
+  const [showSettings, setShowSettings] = createSignal(false)
+  const [config, setConfig] = createSignal<SubagentConfig | null>(null)
+  const [editingConfig, setEditingConfig] = createSignal<SubagentConfig | null>(null)
+  const [savingConfig, setSavingConfig] = createSignal(false)
+  // Per-provider models cache for settings
+  const [settingsModels, setSettingsModels] = createSignal<Record<string, ModelInfo[]>>({})
   let messagesEndRef: HTMLDivElement | undefined
 
   // Load sessions and providers on mount
   onMount(async () => {
-    await Promise.all([loadSessions(), loadProviders()])
+    await Promise.all([loadSessions(), loadProviders(), loadConfig()])
 
     // Global keyboard handler for Escape to close dropdowns
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -75,6 +127,7 @@ function App() {
         setShowSessions(false)
         setShowProviders(false)
         setShowModels(false)
+        setShowSettings(false)
       }
     }
 
@@ -112,6 +165,66 @@ function App() {
     } catch (e) {
       console.error('Failed to load providers:', e)
     }
+  }
+
+  const loadConfig = async () => {
+    try {
+      const res = await fetch('/api/config')
+      const data = await res.json()
+      setConfig(data.config || null)
+    } catch (e) {
+      console.error('Failed to load config:', e)
+    }
+  }
+
+  const saveConfigToServer = async (newConfig: SubagentConfig) => {
+    setSavingConfig(true)
+    try {
+      const res = await fetch('/api/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: newConfig })
+      })
+      if (res.ok) {
+        setConfig(newConfig)
+        setEditingConfig(null)
+        setShowSettings(false)
+      }
+    } catch (e) {
+      console.error('Failed to save config:', e)
+    } finally {
+      setSavingConfig(false)
+    }
+  }
+
+  const loadModelsForProvider = async (provider: string) => {
+    // Check cache first
+    const cached = settingsModels()[provider]
+    if (cached) return cached
+
+    try {
+      const res = await fetch(`/api/providers/${provider}/models`)
+      const data = await res.json()
+      const models = data.models || []
+      setSettingsModels(prev => ({ ...prev, [provider]: models }))
+      return models
+    } catch (e) {
+      console.error(`Failed to load models for ${provider}:`, e)
+      return []
+    }
+  }
+
+  const openSettings = async () => {
+    // Load current config and start editing
+    await loadConfig()
+    setEditingConfig(config() ? { ...config()!, roles: { ...config()!.roles } } : null)
+    // Pre-load models for all configured providers
+    const currentConfig = config()
+    if (currentConfig) {
+      const uniqueProviders = new Set(Object.values(currentConfig.roles).map(r => r.provider))
+      await Promise.all([...uniqueProviders].map(p => loadModelsForProvider(p)))
+    }
+    setShowSettings(true)
   }
 
   const loadModels = async (provider: string) => {
@@ -336,6 +449,78 @@ function App() {
         // Session was saved, refresh the list
         loadSessions()
         break
+
+      // Subagent events
+      case 'subagent_request':
+        setStatus('awaiting_confirmation')
+        setPendingConfirmation({
+          requestId: event.requestId as string,
+          tasks: event.tasks as SubagentTask[]
+        })
+        break
+
+      case 'subagent_confirmed':
+        setPendingConfirmation(null)
+        setStatus('executing')
+        break
+
+      case 'subagent_cancelled':
+        setPendingConfirmation(null)
+        setStatus('thinking')
+        break
+
+      case 'subagent_start':
+        setRunningSubagents(prev => {
+          const next = new Map(prev)
+          next.set(event.taskId as string, {
+            taskId: event.taskId as string,
+            task: {
+              id: event.taskId as string,
+              description: event.description as string,
+              role: event.role as SubagentRole
+            },
+            summary: '',
+            fullHistory: [],
+            status: 'running'
+          })
+          return next
+        })
+        break
+
+      case 'subagent_progress':
+        // Update the running subagent with progress (could track more detail)
+        break
+
+      case 'subagent_complete':
+        setRunningSubagents(prev => {
+          const next = new Map(prev)
+          const existing = next.get(event.taskId as string)
+          if (existing) {
+            existing.status = 'completed'
+            existing.summary = event.summary as string
+            existing.fullHistory = event.fullHistory as Message[]
+            // Move to completed
+            setCompletedSubagents(c => [...c, { ...existing }])
+          }
+          next.delete(event.taskId as string)
+          return next
+        })
+        break
+
+      case 'subagent_error':
+        setRunningSubagents(prev => {
+          const next = new Map(prev)
+          const existing = next.get(event.taskId as string)
+          if (existing) {
+            existing.status = 'error'
+            existing.error = event.error as string
+            existing.fullHistory = event.fullHistory as Message[]
+            setCompletedSubagents(c => [...c, { ...existing }])
+          }
+          next.delete(event.taskId as string)
+          return next
+        })
+        break
     }
   }
 
@@ -485,6 +670,55 @@ function App() {
     setShowModels(false)
   }
 
+  // Subagent confirmation handlers
+  const confirmSubagents = async (tasks: SubagentTask[]) => {
+    const confirmation = pendingConfirmation()
+    if (!confirmation) return
+
+    try {
+      await fetch('/api/subagents/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: confirmation.requestId,
+          confirmed: true,
+          tasks
+        })
+      })
+    } catch (e) {
+      console.error('Failed to confirm subagents:', e)
+    }
+  }
+
+  const cancelSubagents = async () => {
+    const confirmation = pendingConfirmation()
+    if (!confirmation) return
+
+    try {
+      await fetch('/api/subagents/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId: confirmation.requestId,
+          confirmed: false
+        })
+      })
+    } catch (e) {
+      console.error('Failed to cancel subagents:', e)
+    }
+    setPendingConfirmation(null)
+    setStatus('thinking')
+  }
+
+  const getRoleBadgeClass = (role: SubagentRole) => {
+    const classes: Record<SubagentRole, string> = {
+      simple: 'role-badge-simple',
+      complex: 'role-badge-complex',
+      researcher: 'role-badge-researcher'
+    }
+    return classes[role] || ''
+  }
+
   return (
     <>
       <header class="header">
@@ -505,6 +739,13 @@ function App() {
             title="New Chat (Ctrl+N)"
           >
             <span class="btn-icon">+</span>
+          </button>
+          <button
+            class="header-btn"
+            onClick={openSettings}
+            title="Settings"
+          >
+            <span class="btn-icon">⚙</span>
           </button>
         </div>
 
@@ -695,6 +936,45 @@ function App() {
           </div>
         </Show>
 
+        {/* Inline Running Subagents */}
+        <For each={Array.from(runningSubagents().values())}>
+          {(subagent) => (
+            <div class="message">
+              <div class="subagent-card-inline running">
+                <div class="subagent-card-header">
+                  <span class={`role-badge ${getRoleBadgeClass(subagent.task.role)}`}>{subagent.task.role}</span>
+                  <span class="subagent-card-desc">{subagent.task.description}</span>
+                </div>
+                <div class="subagent-card-status">
+                  <span class="spinner" /> Running...
+                </div>
+              </div>
+            </div>
+          )}
+        </For>
+
+        {/* Inline Completed Subagents */}
+        <For each={completedSubagents()}>
+          {(subagent) => (
+            <div class="message">
+              <div
+                class={`subagent-card-inline completed ${subagent.status === 'error' ? 'error' : ''}`}
+                onClick={() => setExpandedSubagent(subagent)}
+              >
+                <div class="subagent-card-header">
+                  <span class={`role-badge ${getRoleBadgeClass(subagent.task.role)}`}>{subagent.task.role}</span>
+                  <span class="subagent-card-desc">{subagent.task.description}</span>
+                  <span class="expand-hint">Click to expand</span>
+                </div>
+                <div class="subagent-card-summary">
+                  {subagent.status === 'error' ? subagent.error : subagent.summary.slice(0, 200)}
+                  {subagent.summary.length > 200 ? '...' : ''}
+                </div>
+              </div>
+            </div>
+          )}
+        </For>
+
         <div ref={messagesEndRef} />
       </div>
 
@@ -712,6 +992,290 @@ function App() {
           />
         </div>
       </div>
+
+      {/* Subagent Confirmation Dialog */}
+      <Show when={pendingConfirmation()}>
+        {(confirmation) => (
+          <div class="subagent-confirm-overlay" onClick={() => cancelSubagents()}>
+            <div class="subagent-confirm-dialog" onClick={(e) => e.stopPropagation()}>
+              <h3>Spawn {confirmation().tasks.length} Subagent{confirmation().tasks.length > 1 ? 's' : ''}?</h3>
+              <div class="subagent-list">
+                <For each={confirmation().tasks}>
+                  {(task) => (
+                    <div class="subagent-item">
+                      <div class="subagent-item-header">
+                        <span class={`role-badge ${getRoleBadgeClass(task.role)}`}>{task.role}</span>
+                        <span class="subagent-description">{task.description}</span>
+                      </div>
+                      <div class="subagent-item-config">
+                        <select
+                          class="subagent-select"
+                          value={task.provider || selectedProvider() || ''}
+                          onChange={(e) => {
+                            const newTasks = [...confirmation().tasks]
+                            const idx = newTasks.findIndex(t => t.id === task.id)
+                            if (idx >= 0) {
+                              newTasks[idx] = { ...task, provider: e.currentTarget.value }
+                              setPendingConfirmation({ ...confirmation(), tasks: newTasks })
+                            }
+                          }}
+                        >
+                          <For each={providers()}>
+                            {(p) => <option value={p.provider}>{getProviderLabel(p.provider)}</option>}
+                          </For>
+                        </select>
+                        <select
+                          class="subagent-select"
+                          value={task.model || selectedModel() || ''}
+                          onChange={(e) => {
+                            const newTasks = [...confirmation().tasks]
+                            const idx = newTasks.findIndex(t => t.id === task.id)
+                            if (idx >= 0) {
+                              newTasks[idx] = { ...task, model: e.currentTarget.value }
+                              setPendingConfirmation({ ...confirmation(), tasks: newTasks })
+                            }
+                          }}
+                        >
+                          <For each={models()}>
+                            {(m) => <option value={m.id}>{getShortModelName(m.id)}</option>}
+                          </For>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                </For>
+              </div>
+              <div class="dialog-actions">
+                <button class="dialog-btn cancel" onClick={() => cancelSubagents()}>Cancel</button>
+                <button class="dialog-btn confirm" onClick={() => confirmSubagents(confirmation().tasks)}>
+                  Spawn Agents
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Show>
+
+      {/* Expanded Subagent Window */}
+      <Show when={expandedSubagent()}>
+        {(subagent) => (
+          <div class="subagent-window-overlay" onClick={() => setExpandedSubagent(null)}>
+            <div class="subagent-window" onClick={(e) => e.stopPropagation()}>
+              <div class="subagent-window-header">
+                <span class={`role-badge ${getRoleBadgeClass(subagent().task.role)}`}>{subagent().task.role}</span>
+                <span class="subagent-window-desc">{subagent().task.description}</span>
+                <button class="close-btn" onClick={() => setExpandedSubagent(null)}>×</button>
+              </div>
+              <div class="subagent-window-content">
+                <For each={subagent().fullHistory}>
+                  {(msg) => (
+                    <div class="subagent-message">
+                      <Show when={msg.role === 'user'}>
+                        <div class="message-user">{msg.content}</div>
+                      </Show>
+                      <Show when={msg.role === 'assistant'}>
+                        <Show when={msg.toolCalls}>
+                          <For each={msg.toolCalls}>
+                            {(tool) => (
+                              <div class="tool-call">
+                                <div class="tool-header">
+                                  <span class="tool-name">{tool.name}</span>
+                                  <span class={`tool-status ${tool.status}`}>
+                                    {tool.status === 'done' && '✓'}
+                                    {tool.status === 'error' && '✗'}
+                                  </span>
+                                </div>
+                                <Show when={tool.input}>
+                                  <div class="tool-input">{formatToolInput(tool.name, typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input))}</div>
+                                </Show>
+                                <Show when={tool.output}>
+                                  <div class="tool-output">{tool.output}</div>
+                                </Show>
+                              </div>
+                            )}
+                          </For>
+                        </Show>
+                        <Show when={msg.content}>
+                          <div class="message-assistant">{msg.content}</div>
+                        </Show>
+                      </Show>
+                    </div>
+                  )}
+                </For>
+              </div>
+            </div>
+          </div>
+        )}
+      </Show>
+
+      {/* Settings Dialog */}
+      <Show when={showSettings() && editingConfig()}>
+        {(cfg) => (
+          <div class="settings-overlay" onClick={() => setShowSettings(false)}>
+            <div class="settings-dialog" onClick={(e) => e.stopPropagation()}>
+              <div class="settings-header">
+                <h2>Subagent Settings</h2>
+                <button class="close-btn" onClick={() => setShowSettings(false)}>×</button>
+              </div>
+
+              <div class="settings-content">
+                {/* General Settings */}
+                <div class="settings-section">
+                  <h3>General</h3>
+
+                  <div class="settings-row">
+                    <label>Confirmation Mode</label>
+                    <select
+                      value={cfg().confirmMode}
+                      onChange={(e) => setEditingConfig(prev => prev ? { ...prev, confirmMode: e.currentTarget.value as 'always' | 'never' | 'multiple' } : null)}
+                    >
+                      <option value="always">Always confirm</option>
+                      <option value="multiple">Only for multiple agents</option>
+                      <option value="never">Never confirm</option>
+                    </select>
+                  </div>
+
+                  <div class="settings-row">
+                    <label>Timeout (seconds)</label>
+                    <input
+                      type="number"
+                      min="30"
+                      max="600"
+                      value={cfg().timeout}
+                      onChange={(e) => setEditingConfig(prev => prev ? { ...prev, timeout: parseInt(e.currentTarget.value) || 120 } : null)}
+                    />
+                  </div>
+
+                  <div class="settings-row">
+                    <label>Max Concurrent</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      value={cfg().maxConcurrent}
+                      onChange={(e) => setEditingConfig(prev => prev ? { ...prev, maxConcurrent: parseInt(e.currentTarget.value) || 5 } : null)}
+                    />
+                  </div>
+                </div>
+
+                {/* Role Settings */}
+                <div class="settings-section">
+                  <h3>Role Defaults</h3>
+                  <p class="settings-hint">Default provider/model for each role. Can be overridden per-task in confirmation dialog.</p>
+
+                  <For each={(['simple', 'complex', 'researcher'] as SubagentRole[])}>
+                    {(role) => (
+                      <div class="role-config">
+                        <div class="role-config-header">
+                          <span class={`role-badge ${getRoleBadgeClass(role)}`}>{role}</span>
+                        </div>
+                        <div class="role-config-fields">
+                          <div class="settings-row">
+                            <label>Provider</label>
+                            <select
+                              value={cfg().roles[role].provider}
+                              onChange={async (e) => {
+                                const newProvider = e.currentTarget.value
+                                await loadModelsForProvider(newProvider)
+                                const providerInfo = providers().find(p => p.provider === newProvider)
+                                setEditingConfig(prev => {
+                                  if (!prev) return null
+                                  return {
+                                    ...prev,
+                                    roles: {
+                                      ...prev.roles,
+                                      [role]: {
+                                        ...prev.roles[role],
+                                        provider: newProvider,
+                                        model: providerInfo?.defaultModel || prev.roles[role].model
+                                      }
+                                    }
+                                  }
+                                })
+                              }}
+                            >
+                              <For each={providers()}>
+                                {(p) => <option value={p.provider}>{getProviderLabel(p.provider)}</option>}
+                              </For>
+                            </select>
+                          </div>
+                          <div class="settings-row">
+                            <label>Model</label>
+                            <select
+                              value={cfg().roles[role].model}
+                              onChange={(e) => {
+                                setEditingConfig(prev => {
+                                  if (!prev) return null
+                                  return {
+                                    ...prev,
+                                    roles: {
+                                      ...prev.roles,
+                                      [role]: {
+                                        ...prev.roles[role],
+                                        model: e.currentTarget.value
+                                      }
+                                    }
+                                  }
+                                })
+                              }}
+                            >
+                              <For each={settingsModels()[cfg().roles[role].provider] || []}>
+                                {(m) => <option value={m.id}>{getShortModelName(m.id)}</option>}
+                              </For>
+                              {/* Show current model even if not in list */}
+                              <Show when={!settingsModels()[cfg().roles[role].provider]?.some(m => m.id === cfg().roles[role].model)}>
+                                <option value={cfg().roles[role].model}>{getShortModelName(cfg().roles[role].model)}</option>
+                              </Show>
+                            </select>
+                          </div>
+                          <div class="settings-row">
+                            <label>Max Iterations</label>
+                            <input
+                              type="number"
+                              min="1"
+                              max="100"
+                              value={cfg().roles[role].maxIterations}
+                              onChange={(e) => {
+                                setEditingConfig(prev => {
+                                  if (!prev) return null
+                                  return {
+                                    ...prev,
+                                    roles: {
+                                      ...prev.roles,
+                                      [role]: {
+                                        ...prev.roles[role],
+                                        maxIterations: parseInt(e.currentTarget.value) || 10
+                                      }
+                                    }
+                                  }
+                                })
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </div>
+
+              <div class="settings-footer">
+                <button class="dialog-btn cancel" onClick={() => setShowSettings(false)}>Cancel</button>
+                <button
+                  class="dialog-btn confirm"
+                  disabled={savingConfig()}
+                  onClick={() => {
+                    const toSave = editingConfig()
+                    if (toSave) saveConfigToServer(toSave)
+                  }}
+                >
+                  {savingConfig() ? 'Saving...' : 'Save Settings'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </Show>
     </>
   )
 }

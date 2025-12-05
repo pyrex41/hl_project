@@ -126,7 +126,53 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['command'],
     },
   },
+  {
+    name: 'task',
+    description: `Spawn subagent(s) to handle tasks in parallel. Use for:
+- Parallel work that doesn't depend on each other
+- Delegating research or exploration
+- Complex subtasks that need focused attention
+
+Role selection guide:
+- simple: Quick, straightforward tasks (file reads, simple edits, commands)
+- complex: Multi-step tasks requiring reasoning and iteration
+- researcher: Exploring codebases, finding patterns, gathering information
+
+Multiple tasks execute in parallel. Results are returned when all complete.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        tasks: {
+          type: 'array',
+          description: 'List of tasks to spawn as subagents',
+          items: {
+            type: 'object',
+            properties: {
+              description: {
+                type: 'string',
+                description: 'What the subagent should accomplish'
+              },
+              role: {
+                type: 'string',
+                enum: ['simple', 'complex', 'researcher'],
+                description: 'Task complexity/type for model selection'
+              },
+              context: {
+                type: 'string',
+                description: 'Optional additional context for the subagent'
+              }
+            },
+            required: ['description', 'role']
+          }
+        }
+      },
+      required: ['tasks'],
+    },
+  },
 ]
+
+// Tool definitions without the task tool (for subagents to prevent nesting)
+export const subagentToolDefinitions: ToolDefinition[] = toolDefinitions.filter(t => t.name !== 'task')
 
 // List available providers based on environment
 export function listAvailableProviders(): { provider: ProviderName; defaultModel: string }[] {

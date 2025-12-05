@@ -5,8 +5,15 @@ import { streamSSE } from 'hono/streaming'
 import { agentLoop, type AgentConfig } from './agent'
 import { createSession, saveSession, loadSession, listSessions, deleteSession, updateSessionMessage } from './sessions'
 import { listAvailableProviders, listModelsForProvider, type ProviderName } from './providers'
-import type { Message } from './types'
+import { loadConfig, saveConfig, DEFAULT_CONFIG, type SubagentConfig } from './config'
+import type { Message, SubagentTask } from './types'
 import type { Session } from './sessions'
+
+// Store pending subagent confirmations by request ID
+const pendingConfirmations: Map<string, {
+  resolve: (tasks: SubagentTask[] | null) => void
+  tasks: SubagentTask[]
+}> = new Map()
 
 const app = new Hono()
 
@@ -39,6 +46,74 @@ app.get('/api/providers/:provider/models', async (c) => {
       error: error instanceof Error ? error.message : 'Failed to list models'
     }, 500)
   }
+})
+
+// Configuration endpoints
+app.get('/api/config', async (c) => {
+  const workingDir = c.req.query('workingDir') || process.cwd()
+  try {
+    const config = await loadConfig(workingDir)
+    return c.json({ config })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to load config'
+    }, 500)
+  }
+})
+
+app.put('/api/config', async (c) => {
+  const body = await c.req.json()
+  const workingDir: string = body.workingDir || process.cwd()
+  const config: Partial<SubagentConfig> = body.config
+
+  if (!config) {
+    return c.json({ error: 'Missing config in request body' }, 400)
+  }
+
+  try {
+    // Load existing config and merge with updates
+    const existing = await loadConfig(workingDir)
+    const merged: SubagentConfig = {
+      ...existing,
+      ...config,
+      roles: {
+        ...existing.roles,
+        ...config.roles
+      }
+    }
+    await saveConfig(workingDir, merged)
+    return c.json({ config: merged })
+  } catch (error) {
+    return c.json({
+      error: error instanceof Error ? error.message : 'Failed to save config'
+    }, 500)
+  }
+})
+
+app.get('/api/config/defaults', (c) => {
+  return c.json({ config: DEFAULT_CONFIG })
+})
+
+// Subagent confirmation endpoints
+app.post('/api/subagents/confirm', async (c) => {
+  const body = await c.req.json()
+  const requestId: string = body.requestId
+  const confirmed: boolean = body.confirmed
+  const tasks: SubagentTask[] | undefined = body.tasks
+
+  const pending = pendingConfirmations.get(requestId)
+  if (!pending) {
+    return c.json({ error: 'No pending confirmation found' }, 404)
+  }
+
+  if (confirmed && tasks) {
+    pending.resolve(tasks)
+  } else {
+    pending.resolve(null)
+  }
+
+  pendingConfirmations.delete(requestId)
+  return c.json({ success: true })
 })
 
 // Session management endpoints
@@ -124,7 +199,34 @@ app.post('/api/chat', async (c) => {
       let toolCalls: Message['toolCalls'] = []
       let tokenUsage = { input: 0, output: 0 }
 
-      for await (const event of agentLoop(userMessage, history, workingDir, agentConfig)) {
+      // Subagent confirmation callback
+      const onSubagentConfirm = async (tasks: SubagentTask[]): Promise<SubagentTask[] | null> => {
+        const requestId = `confirm_${Date.now()}_${Math.random().toString(36).slice(2)}`
+
+        // Send the request ID to the client so it knows which confirmation to respond to
+        await stream.writeSSE({
+          event: 'subagent_request',
+          data: JSON.stringify({ type: 'subagent_request', tasks, requestId })
+        })
+
+        // Wait for confirmation from client
+        return new Promise((resolve) => {
+          pendingConfirmations.set(requestId, { resolve, tasks })
+
+          // Timeout after 5 minutes
+          setTimeout(() => {
+            if (pendingConfirmations.has(requestId)) {
+              pendingConfirmations.delete(requestId)
+              resolve(null)
+            }
+          }, 5 * 60 * 1000)
+        })
+      }
+
+      for await (const event of agentLoop(userMessage, history, workingDir, agentConfig, onSubagentConfirm)) {
+        // Skip subagent_request since we handle it specially in onSubagentConfirm
+        if (event.type === 'subagent_request') continue
+
         await stream.writeSSE({
           event: event.type,
           data: JSON.stringify(event),

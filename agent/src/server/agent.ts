@@ -1,7 +1,9 @@
 import { getProvider, toolDefinitions, type ProviderConfig, type ChatMessage, type ContentBlock } from './providers'
 import { getSystemPrompt } from './prompt'
 import { executeTool } from './tools'
-import type { AgentEvent, Message } from './types'
+import { loadConfig, needsConfirmation, type SubagentConfig } from './config'
+import { runSubagentsParallel } from './subagent'
+import type { AgentEvent, Message, SubagentTask } from './types'
 
 const MAX_ITERATIONS = 25
 const DOOM_LOOP_THRESHOLD = 3
@@ -38,13 +40,18 @@ export interface AgentConfig {
   model?: string
 }
 
+// Callback for subagent confirmation flow
+export type SubagentConfirmCallback = (tasks: SubagentTask[]) => Promise<SubagentTask[] | null>
+
 export async function* agentLoop(
   userMessage: string,
   history: Message[],
   workingDir: string,
-  config?: AgentConfig
+  config?: AgentConfig,
+  onSubagentConfirm?: SubagentConfirmCallback
 ): AsyncGenerator<AgentEvent> {
   const systemPrompt = await getSystemPrompt(workingDir)
+  const subagentConfig = await loadConfig(workingDir)
   const toolCallHistory: ToolCallTracker[] = []
 
   // Get the LLM provider
@@ -149,6 +156,96 @@ export async function* agentLoop(
 
         yield { type: 'tool_running', id }
 
+        // Special handling for the task tool (subagent spawning)
+        if (tool.name === 'task') {
+          const taskInput = tool.input as { tasks: Array<{ description: string; role: string; context?: string }> }
+
+          // Assign IDs to tasks
+          const tasks: SubagentTask[] = taskInput.tasks.map((t, i) => ({
+            id: `subagent_${Date.now()}_${i}`,
+            description: t.description,
+            role: t.role as 'simple' | 'complex' | 'researcher',
+            context: t.context
+          }))
+
+          // Check if confirmation is needed
+          let confirmedTasks = tasks
+          if (needsConfirmation(subagentConfig, tasks.length)) {
+            // Emit request event for UI
+            yield { type: 'subagent_request', tasks }
+
+            // Wait for confirmation via callback
+            if (onSubagentConfirm) {
+              const confirmed = await onSubagentConfirm(tasks)
+              if (!confirmed) {
+                yield { type: 'subagent_cancelled', taskIds: tasks.map(t => t.id) }
+                toolResults.push({
+                  type: 'tool_result',
+                  tool_use_id: id,
+                  content: 'Subagent execution cancelled by user.',
+                  is_error: false
+                })
+                yield {
+                  type: 'tool_result',
+                  id,
+                  output: 'Subagent execution cancelled by user.'
+                }
+                continue
+              }
+              confirmedTasks = confirmed
+              yield { type: 'subagent_confirmed', tasks: confirmedTasks }
+            }
+          }
+
+          // Run subagents in parallel, passing parent's provider/model as default
+          const summaries: Map<string, string> = new Map()
+          const subagentResults: Array<{ taskId: string; summary: string; fullHistory: Message[] }> = []
+          const parentConfig = { provider: config?.provider, model: config?.model }
+
+          for await (const event of runSubagentsParallel(confirmedTasks, workingDir, subagentConfig, parentConfig)) {
+            yield event
+
+            // Collect results
+            if (event.type === 'subagent_complete') {
+              summaries.set(event.taskId, event.summary)
+              subagentResults.push({
+                taskId: event.taskId,
+                summary: event.summary,
+                fullHistory: event.fullHistory
+              })
+            } else if (event.type === 'subagent_error') {
+              summaries.set(event.taskId, `Error: ${event.error}`)
+              subagentResults.push({
+                taskId: event.taskId,
+                summary: `Error: ${event.error}`,
+                fullHistory: event.fullHistory
+              })
+            }
+          }
+
+          // Format summaries for parent agent (lean context - only summaries, not full history)
+          const output = confirmedTasks.map((task, i) =>
+            `## Task ${i + 1}: ${task.description}\n\n${summaries.get(task.id) || '(no result)'}`
+          ).join('\n\n---\n\n')
+
+          yield {
+            type: 'tool_result',
+            id,
+            output,
+            details: {
+              type: 'subagent',
+              data: { tasks: confirmedTasks, results: subagentResults }
+            }
+          }
+          toolResults.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: output
+          })
+          continue
+        }
+
+        // Normal tool execution
         try {
           const result = await executeTool(tool.name, tool.input, workingDir)
           yield {
