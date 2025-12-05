@@ -251,7 +251,7 @@ export function MCPPanel(props: MCPPanelProps) {
   const discoverConfigs = async () => {
     setLoadingDiscover(true)
     try {
-      const res = await fetch('/api/mcp/discover')
+      const res = await fetch(`/api/mcp/discover?workingDir=${encodeURIComponent(props.workingDir)}`)
       if (res.ok) {
         const data = await res.json()
         setDiscoveredSources(data.sources || [])
@@ -541,7 +541,7 @@ export function MCPPanel(props: MCPPanelProps) {
 
                 <Show when={!loadingDiscover() && discoveredSources().length === 0}>
                   <div class="mcp-empty">
-                    No MCP configurations found. Make sure Claude Code (~/.mcp.json) or OpenCode (~/.opencode/config.json) is configured.
+                    No MCP configurations found. Checked Claude Code (global & project), Claude Desktop, and OpenCode.
                   </div>
                 </Show>
 

@@ -726,6 +726,7 @@ app.post('/api/mcp/commands/:commandName', async (c) => {
 // Discover MCP configs from other tools (Claude Code, OpenCode)
 app.get('/api/mcp/discover', async (c) => {
   const homeDir = process.env.HOME || process.env.USERPROFILE || ''
+  const workingDir = c.req.query('workingDir') || process.cwd()
   const sources: Array<{
     source: string
     name: string
@@ -740,48 +741,110 @@ app.get('/api/mcp/discover', async (c) => {
     }>
   }> = []
 
-  // Check Claude Code config (~/.mcp.json)
-  try {
-    const claudeConfigPath = `${homeDir}/.mcp.json`
-    const claudeConfig = await Bun.file(claudeConfigPath).json()
-    if (claudeConfig?.mcpServers) {
-      const servers = Object.entries(claudeConfig.mcpServers).map(([id, config]: [string, any]) => ({
-        id,
-        name: config.name || id,
-        transport: (config.type === 'stdio' ? 'stdio' : config.type === 'sse' ? 'sse' : 'streamable-http') as 'stdio' | 'sse' | 'streamable-http',
-        command: config.command,
-        args: config.args,
-        url: config.url,
-        env: config.env
-      }))
-      if (servers.length > 0) {
-        sources.push({ source: 'claude-code', name: 'Claude Code', servers })
-      }
-    }
-  } catch {
-    // Claude Code config not found or invalid
+  // Helper to parse MCP servers from Claude Code format (object with id as key)
+  const parseMcpServers = (mcpServers: Record<string, any>) => {
+    return Object.entries(mcpServers).map(([id, config]: [string, any]) => ({
+      id,
+      name: config.name || id,
+      transport: (config.type === 'stdio' ? 'stdio' : config.type === 'sse' ? 'sse' : 'streamable-http') as 'stdio' | 'sse' | 'streamable-http',
+      command: config.command,
+      args: config.args,
+      url: config.url,
+      env: config.env
+    }))
   }
 
-  // Check OpenCode config (~/.opencode/config.json)
-  try {
-    const opencodeConfigPath = `${homeDir}/.opencode/config.json`
-    const opencodeConfig = await Bun.file(opencodeConfigPath).json()
-    if (opencodeConfig?.mcp?.servers) {
-      const servers = opencodeConfig.mcp.servers.map((config: any, index: number) => ({
-        id: config.name?.toLowerCase().replace(/\s+/g, '-') || `opencode-${index}`,
-        name: config.name || `OpenCode Server ${index + 1}`,
-        transport: (config.type === 'local' || config.type === 'stdio' ? 'stdio' : 'streamable-http') as 'stdio' | 'sse' | 'streamable-http',
-        command: config.command,
-        args: config.args,
-        url: config.url,
-        env: config.env
-      }))
+  // Helper to safely read JSON file
+  const tryReadJson = async (path: string) => {
+    try {
+      return await Bun.file(path).json()
+    } catch {
+      return null
+    }
+  }
+
+  // Resolve working directory to absolute path
+  const resolvedWorkingDir = workingDir.startsWith('/') ? workingDir : `${process.cwd()}/${workingDir}`
+  const normalizedWorkingDir = resolvedWorkingDir.replace(/\/+$/, '')
+
+  // 1. Check Claude Code global config (~/.claude.json -> mcpServers)
+  const claudeConfig = await tryReadJson(`${homeDir}/.claude.json`)
+  if (claudeConfig?.mcpServers && Object.keys(claudeConfig.mcpServers).length > 0) {
+    const servers = parseMcpServers(claudeConfig.mcpServers)
+    if (servers.length > 0) {
+      sources.push({ source: 'claude-code-global', name: 'Claude Code (Global)', servers })
+    }
+  }
+
+  // 2. Check Claude Code project-level config (~/.claude.json -> projects[path].mcpServers)
+  if (claudeConfig?.projects?.[normalizedWorkingDir]?.mcpServers) {
+    const projectMcp = claudeConfig.projects[normalizedWorkingDir].mcpServers
+    if (Object.keys(projectMcp).length > 0) {
+      const servers = parseMcpServers(projectMcp)
       if (servers.length > 0) {
-        sources.push({ source: 'opencode', name: 'OpenCode', servers })
+        sources.push({ source: 'claude-code-project', name: 'Claude Code (Project)', servers })
       }
     }
-  } catch {
-    // OpenCode config not found or invalid
+  }
+
+  // 3. Check project-level .mcp.json (in project root)
+  const projectMcpJson = await tryReadJson(`${normalizedWorkingDir}/.mcp.json`)
+  if (projectMcpJson?.mcpServers && Object.keys(projectMcpJson.mcpServers).length > 0) {
+    const servers = parseMcpServers(projectMcpJson.mcpServers)
+    if (servers.length > 0) {
+      sources.push({ source: 'project-mcp-json', name: 'Project (.mcp.json)', servers })
+    }
+  }
+
+  // 4. Check project-level .claude/mcp.json
+  const projectClaudeMcp = await tryReadJson(`${normalizedWorkingDir}/.claude/mcp.json`)
+  if (projectClaudeMcp?.mcpServers && Object.keys(projectClaudeMcp.mcpServers).length > 0) {
+    const servers = parseMcpServers(projectClaudeMcp.mcpServers)
+    if (servers.length > 0) {
+      sources.push({ source: 'project-claude-mcp', name: 'Project (.claude/mcp.json)', servers })
+    }
+  }
+
+  // 5. Check legacy ~/.mcp.json (older Claude Code format)
+  const legacyMcp = await tryReadJson(`${homeDir}/.mcp.json`)
+  if (legacyMcp?.mcpServers && Object.keys(legacyMcp.mcpServers).length > 0) {
+    const servers = parseMcpServers(legacyMcp.mcpServers)
+    if (servers.length > 0) {
+      sources.push({ source: 'claude-code-legacy', name: 'Claude Code (Legacy ~/.mcp.json)', servers })
+    }
+  }
+
+  // 6. Check Claude Desktop config (macOS/Windows)
+  const claudeDesktopPaths = [
+    `${homeDir}/Library/Application Support/Claude/claude_desktop_config.json`,
+    `${homeDir}/AppData/Roaming/Claude/claude_desktop_config.json`,
+  ]
+  for (const desktopPath of claudeDesktopPaths) {
+    const desktopConfig = await tryReadJson(desktopPath)
+    if (desktopConfig?.mcpServers && Object.keys(desktopConfig.mcpServers).length > 0) {
+      const servers = parseMcpServers(desktopConfig.mcpServers)
+      if (servers.length > 0) {
+        sources.push({ source: 'claude-desktop', name: 'Claude Desktop', servers })
+        break
+      }
+    }
+  }
+
+  // 7. Check OpenCode config (~/.opencode/config.json)
+  const opencodeConfig = await tryReadJson(`${homeDir}/.opencode/config.json`)
+  if (opencodeConfig?.mcp?.servers && opencodeConfig.mcp.servers.length > 0) {
+    const servers = opencodeConfig.mcp.servers.map((config: any, index: number) => ({
+      id: config.name?.toLowerCase().replace(/\s+/g, '-') || `opencode-${index}`,
+      name: config.name || `OpenCode Server ${index + 1}`,
+      transport: (config.type === 'local' || config.type === 'stdio' ? 'stdio' : 'streamable-http') as 'stdio' | 'sse' | 'streamable-http',
+      command: config.command,
+      args: config.args,
+      url: config.url,
+      env: config.env
+    }))
+    if (servers.length > 0) {
+      sources.push({ source: 'opencode', name: 'OpenCode', servers })
+    }
   }
 
   return c.json({ sources })
