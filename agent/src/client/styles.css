@@ -35,6 +35,10 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  max-width: 1200px;
+  margin: 0 auto;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
 }
 
 /* Header */
