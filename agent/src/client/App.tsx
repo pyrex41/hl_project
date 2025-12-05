@@ -401,6 +401,11 @@ function App() {
   let messagesEndRef: HTMLDivElement | undefined
   let subagentMessagesEndRef: HTMLDivElement | undefined
   let graphContainerRef: HTMLDivElement | undefined
+  // Auto-scroll state for subagent views
+  let subagentTabScrollRef: HTMLDivElement | undefined
+  let subagentModalScrollRef: HTMLDivElement | undefined
+  const [subagentTabUserScrolled, setSubagentTabUserScrolled] = createSignal(false)
+  const [subagentModalUserScrolled, setSubagentModalUserScrolled] = createSignal(false)
 
   // Load sessions and providers on mount
   onMount(async () => {
@@ -434,6 +439,53 @@ function App() {
 
     document.addEventListener('keydown', handleKeyDown)
     document.addEventListener('mousedown', handleClickOutside)
+  })
+
+  // Auto-scroll helpers for subagent views
+  const isNearBottom = (el: HTMLElement, threshold = 100) => {
+    return el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+  }
+
+  const handleSubagentTabScroll = (e: Event) => {
+    const el = e.target as HTMLElement
+    setSubagentTabUserScrolled(!isNearBottom(el))
+  }
+
+  const handleSubagentModalScroll = (e: Event) => {
+    const el = e.target as HTMLElement
+    setSubagentModalUserScrolled(!isNearBottom(el))
+  }
+
+  // Auto-scroll effect for tab view
+  createEffect(() => {
+    const id = expandedSubagentId()
+    const subagent = id ? runningSubagents().get(id) : null
+    // Access reactive properties to trigger effect
+    subagent?.currentText
+    subagent?.currentTools
+
+    if (subagentTabScrollRef && !subagentTabUserScrolled()) {
+      subagentTabScrollRef.scrollTop = subagentTabScrollRef.scrollHeight
+    }
+  })
+
+  // Auto-scroll effect for modal view
+  createEffect(() => {
+    const subagent = expandedSubagent()
+    // Access reactive properties to trigger effect
+    subagent?.currentText
+    subagent?.currentTools
+
+    if (subagentModalScrollRef && !subagentModalUserScrolled()) {
+      subagentModalScrollRef.scrollTop = subagentModalScrollRef.scrollHeight
+    }
+  })
+
+  // Reset user scrolled state when switching subagents
+  createEffect(() => {
+    expandedSubagentId()
+    setSubagentTabUserScrolled(false)
+    setSubagentModalUserScrolled(false)
   })
 
   const loadProviders = async () => {
@@ -1927,7 +1979,11 @@ function App() {
                       <span class="subagent-window-status error">Error</span>
                     </Show>
                   </div>
-                  <div class="subagent-tab-messages">
+                  <div
+                    class="subagent-tab-messages"
+                    ref={subagentTabScrollRef}
+                    onScroll={handleSubagentTabScroll}
+                  >
                     {/* Full history */}
                     <For each={sa().fullHistory}>
                       {(msg) => (
@@ -2073,48 +2129,105 @@ function App() {
               <h3>Spawn {confirmation().tasks.length} Subagent{confirmation().tasks.length > 1 ? 's' : ''}?</h3>
               <div class="subagent-list">
                 <For each={confirmation().tasks}>
-                  {(task) => (
-                    <div class="subagent-item">
-                      <div class="subagent-item-header">
-                        <span class={`role-badge ${getRoleBadgeClass(task.role)}`}>{task.role}</span>
-                        <span class="subagent-description">{task.description}</span>
-                      </div>
-                      <div class="subagent-item-config">
-                        <select
-                          class="subagent-select"
-                          value={task.provider || selectedProvider() || ''}
-                          onChange={(e) => {
+                  {(task) => {
+                    // Get provider/model - use task override, or role default from config, or main chat default
+                    const roleConfig = () => config()?.subagents?.roles?.[task.role]
+                    const effectiveProvider = () => task.provider || roleConfig()?.provider || selectedProvider() || ''
+                    const effectiveModel = () => task.model || roleConfig()?.model || selectedModel() || ''
+
+                    return (
+                      <div class="subagent-item">
+                        <div class="subagent-item-header">
+                          {/* Editable role selector */}
+                          <select
+                            class="role-select"
+                            value={task.role}
+                            onChange={(e) => {
+                              const newRole = e.currentTarget.value as SubagentRole
+                              const newRoleConfig = config()?.subagents?.roles?.[newRole]
+                              const newTasks = [...confirmation().tasks]
+                              const idx = newTasks.findIndex(t => t.id === task.id)
+                              if (idx >= 0) {
+                                // Update role and reset provider/model to new role's defaults
+                                newTasks[idx] = {
+                                  ...task,
+                                  role: newRole,
+                                  provider: newRoleConfig?.provider,
+                                  model: newRoleConfig?.model
+                                }
+                                setPendingConfirmation({ ...confirmation(), tasks: newTasks })
+                              }
+                            }}
+                          >
+                            <option value="simple">simple</option>
+                            <option value="complex">complex</option>
+                            <option value="researcher">researcher</option>
+                          </select>
+                        </div>
+                        {/* Editable description/prompt */}
+                        <textarea
+                          class="subagent-description-edit"
+                          value={task.description}
+                          rows={3}
+                          onInput={(e) => {
                             const newTasks = [...confirmation().tasks]
                             const idx = newTasks.findIndex(t => t.id === task.id)
                             if (idx >= 0) {
-                              newTasks[idx] = { ...task, provider: e.currentTarget.value }
+                              newTasks[idx] = { ...task, description: e.currentTarget.value }
                               setPendingConfirmation({ ...confirmation(), tasks: newTasks })
                             }
                           }}
-                        >
-                          <For each={providers()}>
-                            {(p) => <option value={p.provider}>{getProviderLabel(p.provider)}</option>}
-                          </For>
-                        </select>
-                        <select
-                          class="subagent-select"
-                          value={task.model || selectedModel() || ''}
-                          onChange={(e) => {
-                            const newTasks = [...confirmation().tasks]
-                            const idx = newTasks.findIndex(t => t.id === task.id)
-                            if (idx >= 0) {
-                              newTasks[idx] = { ...task, model: e.currentTarget.value }
-                              setPendingConfirmation({ ...confirmation(), tasks: newTasks })
-                            }
-                          }}
-                        >
-                          <For each={models()}>
-                            {(m) => <option value={m.id}>{getShortModelName(m.id)}</option>}
-                          </For>
-                        </select>
+                        />
+                        <div class="subagent-item-config">
+                          <select
+                            class="subagent-select"
+                            value={effectiveProvider()}
+                            onChange={async (e) => {
+                              const newProvider = e.currentTarget.value
+                              // Load models for this provider if not already loaded
+                              await loadModelsForProvider(newProvider)
+                              const newTasks = [...confirmation().tasks]
+                              const idx = newTasks.findIndex(t => t.id === task.id)
+                              if (idx >= 0) {
+                                // Get default model for new provider
+                                const providerInfo = providers().find(p => p.provider === newProvider)
+                                newTasks[idx] = {
+                                  ...task,
+                                  provider: newProvider,
+                                  model: providerInfo?.defaultModel || ''
+                                }
+                                setPendingConfirmation({ ...confirmation(), tasks: newTasks })
+                              }
+                            }}
+                          >
+                            <For each={providers()}>
+                              {(p) => <option value={p.provider}>{getProviderLabel(p.provider)}</option>}
+                            </For>
+                          </select>
+                          <select
+                            class="subagent-select"
+                            value={effectiveModel()}
+                            onChange={(e) => {
+                              const newTasks = [...confirmation().tasks]
+                              const idx = newTasks.findIndex(t => t.id === task.id)
+                              if (idx >= 0) {
+                                newTasks[idx] = { ...task, model: e.currentTarget.value }
+                                setPendingConfirmation({ ...confirmation(), tasks: newTasks })
+                              }
+                            }}
+                          >
+                            <For each={settingsModels()[effectiveProvider()] || models()}>
+                              {(m) => <option value={m.id}>{getShortModelName(m.id)}</option>}
+                            </For>
+                            {/* Show current model even if not in list */}
+                            <Show when={!(settingsModels()[effectiveProvider()] || models()).some(m => m.id === effectiveModel())}>
+                              <option value={effectiveModel()}>{getShortModelName(effectiveModel())}</option>
+                            </Show>
+                          </select>
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )
+                  }}
                 </For>
               </div>
               <div class="dialog-actions">
@@ -2152,7 +2265,11 @@ function App() {
                 </button>
                 <button class="close-btn" onClick={() => setExpandedSubagentId(null)}>×</button>
               </div>
-              <div class="subagent-window-content">
+              <div
+                class="subagent-window-content"
+                ref={subagentModalScrollRef}
+                onScroll={handleSubagentModalScroll}
+              >
                 {/* Full history */}
                 <For each={subagent().fullHistory}>
                   {(msg) => (

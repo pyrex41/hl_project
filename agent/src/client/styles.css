@@ -713,6 +713,55 @@ body {
   border-color: var(--accent-dim);
 }
 
+/* Role selector in confirmation dialog */
+.role-select {
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.role-select:hover {
+  border-color: var(--border-light);
+}
+
+.role-select:focus {
+  border-color: var(--accent-dim);
+  outline: none;
+}
+
+/* Editable description textarea */
+.subagent-description-edit {
+  width: 100%;
+  padding: 8px 10px;
+  margin: 8px 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  resize: vertical;
+  min-height: 60px;
+  transition: border-color 0.15s ease;
+}
+
+.subagent-description-edit:hover {
+  border-color: var(--border-light);
+}
+
+.subagent-description-edit:focus {
+  border-color: var(--accent-dim);
+  outline: none;
+}
+
 /* Role badges */
 .role-badge {
   font-size: 10px;
